@@ -2109,6 +2109,8 @@ pub mod sessions {
             let remove_ret = write_lock.remove(id);
             match remove_ret {
                 Some(_) => {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    crate::automation::sessions::remove_view(s, id);
                     if write_lock.is_empty() {
                         remove_peer_key = Some(peer_key.clone());
                     } else {
@@ -2244,6 +2246,10 @@ pub mod sessions {
             .write()
             .unwrap()
             .insert(session_id, Default::default());
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if let Some(s) = get_session_by_session_id(&session_id) {
+            crate::automation::sessions::add_view(&s, &session_id);
+        }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         update_session_count_to_server();
     }
@@ -2277,6 +2283,8 @@ pub mod sessions {
                 .write()
                 .unwrap()
                 .insert(session_id, h);
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            crate::automation::sessions::add_view(s, &session_id);
             // If the session is a single display session, it may be a software rgba rendered display.
             // If this is the second time the display is opened, the old valid flag may be true.
             if displays.len() == 1 {

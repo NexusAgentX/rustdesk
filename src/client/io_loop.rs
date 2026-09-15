@@ -83,6 +83,8 @@ pub struct Remote<T: InvokeUiSession> {
     chroma: Arc<RwLock<Option<Chroma>>>,
     last_record_state: bool,
     sent_close_reason: bool,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    automation: Option<crate::automation::sessions::Connection>,
 }
 
 #[derive(Default)]
@@ -132,10 +134,16 @@ impl<T: InvokeUiSession> Remote<T> {
             chroma: Default::default(),
             last_record_state: false,
             sent_close_reason: false,
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            automation: None,
         }
     }
 
     pub async fn io_loop(&mut self, key: &str, token: &str, round: u32) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        {
+            self.automation = crate::automation::sessions::begin(&self.handler, round);
+        }
         #[cfg(target_os = "windows")]
         let _file_clip_context_holder = {
             // `is_port_forward()` will not reach here, but we still check it for clarity.
@@ -362,6 +370,10 @@ impl<T: InvokeUiSession> Remote<T> {
     }
 
     fn handle_disconnected(&self, round: u32) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if let Some(observer) = &self.automation {
+            observer.disconnected();
+        }
         // set_disconnected_ok is used to check if new connection round is started.
         let _set_disconnected_ok = self
             .handler
@@ -1359,6 +1371,10 @@ impl<T: InvokeUiSession> Remote<T> {
                 }
                 Some(message::Union::LoginResponse(lr)) => match lr.union {
                     Some(login_response::Union::Error(err)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation {
+                            observer.login_error(&err);
+                        }
                         if err == client::REQUIRE_2FA {
                             self.handler.lc.write().unwrap().enable_trusted_devices =
                                 lr.enable_trusted_devices;
@@ -1368,6 +1384,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(login_response::Union::PeerInfo(pi)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation {
+                            observer.authenticated(&pi);
+                        }
                         let peer_version = pi.version.clone();
                         let peer_platform = pi.platform.clone();
                         self.set_peer_info(&pi);
@@ -1790,6 +1810,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         self.handler.new_message(c.text);
                     }
                     Some(misc::Union::PermissionInfo(p)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation {
+                            observer.permission(&p);
+                        }
                         log::info!("Change permission {:?} -> {}", p.permission, p.enabled);
                         // https://github.com/rustdesk/rustdesk/issues/3703#issuecomment-1474734754
                         match p.permission.enum_value() {
@@ -1847,6 +1871,10 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::SwitchDisplay(s)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation {
+                            observer.switch_display(&s);
+                        }
                         self.handler.handle_peer_switch_display(&s);
                         if let Some(thread) = self.video_threads.get_mut(&(s.display as usize)) {
                             thread.video_sender.send(MediaData::Reset).ok();
@@ -2106,6 +2134,10 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                 }
                 Some(message::Union::PeerInfo(pi)) => {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    if let Some(observer) = &self.automation {
+                        observer.layout(&pi.displays);
+                    }
                     self.handler.set_displays(&pi.displays);
                     self.handler.set_platform_additions(&pi.platform_additions);
                 }
@@ -2437,6 +2469,8 @@ impl<T: InvokeUiSession> Remote<T> {
             discard_queue: discard_queue.clone(),
         };
         let handler = self.handler.ui_handler.clone();
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let automation = self.automation.clone();
         crate::client::start_video_thread(
             self.handler.clone(),
             display,
@@ -2450,6 +2484,10 @@ impl<T: InvokeUiSession> Remote<T> {
                   _texture: *mut c_void,
                   pixelbuffer: bool| {
                 *frame_count.write().unwrap() += 1;
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(observer) = &automation {
+                    observer.frame(display, data, pixelbuffer);
+                }
                 if pixelbuffer {
                     handler.on_rgba(display, data);
                 } else {

@@ -12,6 +12,8 @@ mod server;
 #[cfg(not(any(target_os = "ios")))]
 pub use self::server::*;
 mod client;
+#[cfg(all(feature = "automation", target_os = "macos"))]
+pub mod automation;
 mod lan;
 #[cfg(not(any(target_os = "ios")))]
 mod rendezvous_mediator;

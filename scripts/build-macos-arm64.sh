@@ -48,8 +48,12 @@ bridge() {
 }
 
 rust() {
+    local features=flutter,hwcodec,unix-file-copy-paste,screencapturekit
+    if [[ "${RUSTDESK_AUTOMATION:-0}" == 1 ]]; then
+        features+=,automation
+    fi
     cargo build --locked --release \
-        --features flutter,hwcodec,unix-file-copy-paste,screencapturekit
+        --features "$features"
     cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib
 }
 
@@ -72,9 +76,16 @@ gui() {
     codesign --verify --deep --strict "$app"
 }
 
+automation_tests() {
+    cargo test --locked --release --lib \
+        --features automation,hwcodec,unix-file-copy-paste,screencapturekit \
+        automation::
+}
+
 stage="${1:-check}"
 case "$stage" in
     check|deps|bridge|rust|gui) "$stage" ;;
+    automation-tests) automation_tests ;;
     all) check; deps; bridge; rust; gui ;;
-    *) echo "Usage: $0 {check|deps|bridge|rust|gui|all}" >&2; exit 2 ;;
+    *) echo "Usage: $0 {check|deps|bridge|rust|gui|all|automation-tests}" >&2; exit 2 ;;
 esac
