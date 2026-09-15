@@ -27,6 +27,7 @@ use_rubato = ["rubato"]
 use_dasp = ["dasp"]
 flutter = ["flutter_rust_bridge"]
 automation = ["flutter"]
+mcp = ["automation", "dep:rmcp", "dep:axum", "dep:schemars", "dep:tokio-util", "dep:security-framework"]
 default = ["use_dasp"]
 hwcodec = ["scrap/hwcodec"]
 vram = ["scrap/vram"]
@@ -161,6 +162,27 @@ foreign-types = "0.3"
 tray-icon = { git = "https://github.com/tauri-apps/tray-icon", version = "0.21.3" }
 tao = { git = "https://github.com/rustdesk-org/tao", branch = "dev" }
 image = "0.24"
+
+[target.'cfg(target_os = "macos")'.dependencies.rmcp]
+version = "=3.3.0"
+optional = true
+features = ["transport-streamable-http-server"]
+
+[target.'cfg(target_os = "macos")'.dependencies.axum]
+version = "0.8"
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.schemars]
+version = "1"
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.tokio-util]
+version = "0.7"
+optional = true
+
+[target.'cfg(target_os = "macos")'.dependencies.security-framework]
+version = "2.10"
+optional = true
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 keepawake = { git = "https://github.com/rustdesk-org/keepawake-rs" }

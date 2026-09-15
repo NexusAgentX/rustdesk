@@ -44,6 +44,13 @@ pub struct Display {
     pub online: bool,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct AuthChallenge {
+    pub id: String,
+    pub kind: String,
+    pub fields: Vec<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionSnapshot {
     pub session_id: String,
@@ -53,6 +60,7 @@ pub struct SessionSnapshot {
     pub state: ConnectionState,
     pub connection_epoch: u64,
     pub authenticated: bool,
+    pub auth_challenge: Option<AuthChallenge>,
     pub platform: Option<String>,
     pub terminal_supported: Option<bool>,
     /// Missing entries are unknown, never permission grants.
@@ -61,6 +69,7 @@ pub struct SessionSnapshot {
     pub current_display: usize,
     pub layout_revision: u64,
     pub revision: u64,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
     pub last_error: Option<String>,
     pub frame_error: Option<FrameError>,
 }
@@ -73,6 +82,7 @@ struct State {
 }
 
 struct Record {
+    control: Arc<super::control::Authority>,
     state: Mutex<State>,
     changes: watch::Sender<u64>,
     frames_changed: watch::Sender<u64>,
@@ -84,19 +94,22 @@ struct Record {
 pub struct SessionHandle(Arc<Record>);
 
 impl SessionHandle {
-    fn new(peer_id: String, kind: SessionKind, cache: Arc<Mutex<FrameCache>>) -> Self {
+    pub(crate) fn new(peer_id: String, kind: SessionKind, cache: Arc<Mutex<FrameCache>>) -> Self {
+        let session_id = format!("s_{}", Uuid::new_v4());
         let (changes, _) = watch::channel(0);
         let (frames_changed, _) = watch::channel(0);
         Self(Arc::new(Record {
+            control: Arc::new(super::control::Authority::new(session_id.clone())),
             state: Mutex::new(State {
                 snapshot: SessionSnapshot {
-                    session_id: format!("s_{}", Uuid::new_v4()),
+                    session_id,
                     peer_id,
                     kind,
                     ui_session_ids: BTreeSet::new(),
                     state: ConnectionState::Connecting,
                     connection_epoch: 0,
                     authenticated: false,
+                    auth_challenge: None,
                     platform: None,
                     terminal_supported: None,
                     permissions: BTreeMap::new(),
@@ -104,6 +117,7 @@ impl SessionHandle {
                     current_display: 0,
                     layout_revision: 0,
                     revision: 0,
+                    updated_at: chrono::Utc::now(),
                     last_error: None,
                     frame_error: None,
                 },
@@ -119,6 +133,20 @@ impl SessionHandle {
 
     pub fn snapshot(&self) -> SessionSnapshot {
         self.0.state.lock().unwrap().snapshot.clone()
+    }
+
+    pub fn control(&self) -> Arc<super::control::Authority> {
+        self.0.control.clone()
+    }
+
+    pub(crate) fn close_placeholder(&self, error: &str) {
+        let mut state = self.0.state.lock().unwrap();
+        state.snapshot.state = ConnectionState::Closed;
+        state.snapshot.last_error = Some(error.to_owned());
+        self.0
+            .control
+            .disconnected(state.snapshot.connection_epoch, true);
+        self.notify(&mut state);
     }
 
     /// Subscribe before reading snapshot() so a concurrent update cannot be missed.
@@ -179,7 +207,13 @@ impl SessionHandle {
         Ok(state.snapshot.state)
     }
 
+    pub fn changed(&self) {
+        let mut state = self.0.state.lock().unwrap();
+        self.notify(&mut state);
+    }
+
     fn notify(&self, state: &mut State) {
+        state.snapshot.updated_at = chrono::Utc::now();
         state.snapshot.revision += 1;
         self.0.changes.send_replace(state.snapshot.revision);
     }
@@ -201,10 +235,17 @@ impl SessionHandle {
         {
             return None;
         }
+        if state.started {
+            super::terminals::disconnected(&state.snapshot.session_id, self.control().binding_id());
+            self.0.control.disconnected(epoch, false);
+        } else {
+            self.0.control.first_connection(epoch);
+        }
         state.started = true;
         state.snapshot.connection_epoch = epoch;
         state.snapshot.state = ConnectionState::Connecting;
         state.snapshot.authenticated = false;
+        state.snapshot.auth_challenge = None;
         state.snapshot.platform = None;
         state.snapshot.terminal_supported = None;
         state.snapshot.permissions.clear();
@@ -229,6 +270,38 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
+    pub(crate) fn terminal(
+        &self,
+        mut response: hbb_common::message_proto::TerminalResponse,
+    ) -> hbb_common::message_proto::TerminalResponse {
+        if let Some(hbb_common::message_proto::terminal_response::Union::Data(data)) =
+            &mut response.union
+        {
+            if data.compressed {
+                data.data = hbb_common::compress::decompress(&data.data).into();
+                data.compressed = false;
+            }
+        }
+        let mut state = self.session.0.state.lock().unwrap();
+        if state.snapshot.connection_epoch == self.epoch
+            && state.snapshot.authenticated
+            && state.snapshot.state != ConnectionState::Closed
+        {
+            super::terminals::response(
+                &state.snapshot.session_id,
+                self.epoch,
+                self.session.control().binding_id(),
+                &response,
+            );
+            if !matches!(
+                response.union,
+                Some(hbb_common::message_proto::terminal_response::Union::Data(_))
+            ) {
+                self.session.notify(&mut state);
+            }
+        }
+        response
+    }
     fn update(&self, f: impl FnOnce(&mut State)) {
         let mut state = self.session.0.state.lock().unwrap();
         if state.snapshot.connection_epoch != self.epoch
@@ -246,17 +319,44 @@ impl Connection {
     pub(crate) fn login_error(&self, error: &str) {
         self.update(|state| {
             state.snapshot.authenticated = false;
+            state.snapshot.auth_challenge = None;
             state.snapshot.state = if matches!(
                 error,
                 crate::client::LOGIN_MSG_PASSWORD_EMPTY
                     | crate::client::LOGIN_MSG_PASSWORD_WRONG
                     | crate::client::REQUIRE_2FA
                     | crate::client::LOGIN_MSG_2FA_WRONG
+                    | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_EMPTY
+                    | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG
             ) {
                 ConnectionState::AwaitingAuth
             } else {
                 ConnectionState::AwaitingHuman
             };
+            let kind = if matches!(
+                error,
+                crate::client::REQUIRE_2FA | crate::client::LOGIN_MSG_2FA_WRONG
+            ) {
+                "two_factor"
+            } else if matches!(
+                error,
+                crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_EMPTY
+                    | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG
+            ) {
+                "os_login"
+            } else {
+                "password"
+            };
+            state.snapshot.auth_challenge = (state.snapshot.state == ConnectionState::AwaitingAuth)
+                .then(|| AuthChallenge {
+                    id: format!("auth_{}", Uuid::new_v4()),
+                    kind: kind.into(),
+                    fields: match kind {
+                        "two_factor" => vec!["code".into()],
+                        "os_login" => vec!["username".into(), "password".into()],
+                        _ => vec!["password".into()],
+                    },
+                });
             state.snapshot.last_error = Some(error.chars().take(1024).collect());
             self.session.invalidate_frames(state);
         });
@@ -265,7 +365,16 @@ impl Connection {
     pub(crate) fn authenticated(&self, peer: &PeerInfo) {
         self.update(|state| {
             state.snapshot.authenticated = true;
+            state.snapshot.auth_challenge = None;
             state.snapshot.platform = Some(peer.platform.clone());
+            // Desktop peers send initial permission messages only for denials, before PeerInfo.
+            if matches!(peer.platform.as_str(), "Windows" | "Mac OS" | "Linux") {
+                state
+                    .snapshot
+                    .permissions
+                    .entry("keyboard".into())
+                    .or_insert(true);
+            }
             state.snapshot.terminal_supported = peer.features.as_ref().map(|f| f.terminal);
             state.snapshot.current_display = peer.current_display as usize;
             state.snapshot.displays = displays(&peer.displays);
@@ -335,8 +444,14 @@ impl Connection {
 
     pub(crate) fn disconnected(&self) {
         self.update(|state| {
+            super::terminals::disconnected(
+                &state.snapshot.session_id,
+                self.session.control().binding_id(),
+            );
+            self.session.0.control.disconnected(self.epoch, false);
             state.snapshot.state = ConnectionState::Disconnected;
             state.snapshot.authenticated = false;
+            state.snapshot.auth_challenge = None;
             state.snapshot.permissions.clear();
             state.sequence += 1;
             self.session.0.frames_changed.send_replace(state.sequence);
@@ -456,6 +571,7 @@ struct Entry {
 struct Registry {
     entries: HashMap<usize, Entry>,
     cache: Arc<Mutex<FrameCache>>,
+    closed: Vec<(std::time::Instant, SessionHandle)>,
 }
 
 fn registry() -> &'static Mutex<Registry> {
@@ -478,7 +594,8 @@ fn session<T: InvokeUiSession>(core: &Session<T>) -> Option<SessionHandle> {
             .entry(key)
             .or_insert_with(|| Entry {
                 core: Arc::downgrade(&core.connection_round_state),
-                session: SessionHandle::new(core.get_id(), kind, cache),
+                session: super::gui::registering()
+                    .unwrap_or_else(|| SessionHandle::new(core.get_id(), kind, cache)),
             })
             .session
             .clone(),
@@ -495,6 +612,7 @@ pub(crate) fn add_view<T: InvokeUiSession>(core: &Session<T>, view: &Uuid) {
 }
 
 pub(crate) fn remove_view<T: InvokeUiSession>(core: &Session<T>, view: &Uuid) {
+    super::gui::forget_view(view);
     let key = Arc::as_ptr(&core.connection_round_state) as usize;
     let mut registry = registry().lock().unwrap();
     let Some(entry) = registry.entries.get(&key) else {
@@ -506,8 +624,20 @@ pub(crate) fn remove_view<T: InvokeUiSession>(core: &Session<T>, view: &Uuid) {
     }
     let closed = state.snapshot.ui_session_ids.is_empty();
     if closed {
+        super::subscriptions::forget(&state.snapshot.session_id);
+        super::input::forget(&state.snapshot.session_id);
+        super::terminals::disconnected(
+            &state.snapshot.session_id,
+            entry.session.control().binding_id(),
+        );
+        entry
+            .session
+            .0
+            .control
+            .disconnected(state.snapshot.connection_epoch, true);
         state.snapshot.state = ConnectionState::Closed;
         state.snapshot.authenticated = false;
+        state.snapshot.auth_challenge = None;
         state.snapshot.permissions.clear();
         state.capture_enabled = false;
         entry.session.invalidate_frames(&mut state);
@@ -515,7 +645,13 @@ pub(crate) fn remove_view<T: InvokeUiSession>(core: &Session<T>, view: &Uuid) {
     entry.session.notify(&mut state);
     drop(state);
     if closed {
-        registry.entries.remove(&key);
+        if let Some(entry) = registry.entries.remove(&key) {
+            if entry.session.control().binding_id().is_some() {
+                registry
+                    .closed
+                    .push((std::time::Instant::now(), entry.session));
+            }
+        }
     }
 }
 
@@ -539,22 +675,38 @@ pub(crate) fn begin<T: InvokeUiSession>(core: &Session<T>, round: u32) -> Option
     handle.begin(u64::from(round))
 }
 
-pub fn list() -> Vec<SessionHandle> {
+pub(crate) fn registered() -> Vec<SessionHandle> {
     let mut registry = registry().lock().unwrap();
+    let mut closed = Vec::new();
     registry.entries.retain(|_, entry| {
         if entry.core.strong_count() == 0 {
             let mut state = entry.session.0.state.lock().unwrap();
+            super::subscriptions::forget(&state.snapshot.session_id);
+            super::input::forget(&state.snapshot.session_id);
+            super::terminals::disconnected(
+                &state.snapshot.session_id,
+                entry.session.control().binding_id(),
+            );
+            entry
+                .session
+                .control()
+                .disconnected(state.snapshot.connection_epoch, true);
             state.snapshot.state = ConnectionState::Closed;
             state.snapshot.authenticated = false;
+            state.snapshot.auth_challenge = None;
             state.snapshot.permissions.clear();
             state.capture_enabled = false;
             entry.session.invalidate_frames(&mut state);
             entry.session.notify(&mut state);
+            if entry.session.control().binding_id().is_some() {
+                closed.push((std::time::Instant::now(), entry.session.clone()));
+            }
             false
         } else {
             true
         }
     });
+    registry.closed.extend(closed);
     registry
         .entries
         .values()
@@ -562,10 +714,53 @@ pub fn list() -> Vec<SessionHandle> {
         .collect()
 }
 
+pub fn list() -> Vec<SessionHandle> {
+    let mut sessions = registered();
+    sessions.extend(super::gui::placeholders());
+    {
+        let mut registry = registry().lock().unwrap();
+        registry
+            .closed
+            .retain(|(at, _)| at.elapsed().as_secs() < 60);
+        sessions.extend(registry.closed.iter().map(|(_, s)| s.clone()));
+    }
+    sessions
+}
+
+pub(crate) fn shared_cache() -> Arc<Mutex<FrameCache>> {
+    registry().lock().unwrap().cache.clone()
+}
+
 pub fn get(session_id: &str) -> Option<SessionHandle> {
     list()
         .into_iter()
         .find(|s| s.snapshot().session_id == session_id)
+}
+
+pub(crate) fn for_core<T: InvokeUiSession>(core: &Session<T>) -> Option<SessionHandle> {
+    registry()
+        .lock()
+        .unwrap()
+        .entries
+        .get(&(Arc::as_ptr(&core.connection_round_state) as usize))
+        .map(|entry| entry.session.clone())
+}
+
+pub fn for_view(view: &Uuid) -> Option<SessionHandle> {
+    let core = crate::flutter::sessions::get_session_by_session_id(view)?;
+    for_core(&core)
+}
+
+pub fn core(session_id: &str) -> Option<Arc<Session<crate::flutter::FlutterHandler>>> {
+    get(session_id)?
+        .snapshot()
+        .ui_session_ids
+        .iter()
+        .find_map(|view| {
+            Uuid::parse_str(view)
+                .ok()
+                .and_then(|view| crate::flutter::sessions::get_session_by_session_id(&view))
+        })
 }
 
 #[cfg(test)]
@@ -610,6 +805,24 @@ mod tests {
         let revision = session.snapshot().revision;
         connection.frame(0, &image, true);
         assert_eq!(session.snapshot().revision, revision);
+    }
+
+    #[test]
+    fn desktop_authentication_applies_protocol_permission_defaults_but_keeps_denials() {
+        let (session, mut peer, _) = fixture();
+        peer.platform = "Windows".into();
+        let connection = session.begin(0).unwrap();
+        assert!(session.snapshot().permissions.get("keyboard").is_none());
+        connection.authenticated(&peer);
+        assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&true));
+        let next = session.begin(1).unwrap();
+        next.permission(&PermissionInfo {
+            permission: hbb_common::message_proto::permission_info::Permission::Keyboard.into(),
+            enabled: false,
+            ..Default::default()
+        });
+        next.authenticated(&peer);
+        assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&false));
     }
 
     #[test]
@@ -849,6 +1062,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bound_closed_sessions_keep_readable_completion_records() {
+        for drop_core in [false, true] {
+            let core: Session<crate::flutter::FlutterHandler> = Default::default();
+            let view = Uuid::new_v4();
+            add_view(&core, &view);
+            let handle = session(&core).unwrap();
+            let agent = super::super::control::Agent::new();
+            handle.control().attach(&agent, false).unwrap();
+            let reference = handle.control().view().session_ref.unwrap();
+            if !drop_core {
+                remove_view(&core, &view);
+            }
+            drop(core);
+            let closed = get(&handle.snapshot().session_id).unwrap();
+            assert_eq!(closed.snapshot().state, ConnectionState::Closed);
+            assert!(closed.control().resolve(&agent, &reference, false).is_ok());
+            assert!(closed.control().resolve(&agent, &reference, true).is_err());
+            closed.control().release(None, true).unwrap();
+        }
+    }
     #[test]
     fn multiple_views_share_one_identity_and_last_close_fences_callbacks() {
         let core: Session<crate::flutter::FlutterHandler> = Default::default();

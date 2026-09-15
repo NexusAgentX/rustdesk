@@ -1,9 +1,11 @@
+import '../widgets/automation_banner.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/desktop/widgets/tabbar_widget.dart';
 import 'package:flutter_hbb/models/model.dart';
+import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/terminal_model.dart';
 import 'package:xterm/xterm.dart';
 import 'terminal_connection_manager.dart';
@@ -19,7 +21,9 @@ class TerminalPage extends StatefulWidget {
     required this.tabKey,
     this.forceRelay,
     this.connToken,
+    this.automationRequestId,
   }) : super(key: key);
+  final String? automationRequestId;
   final String id;
   final String? password;
   final DesktopTabController tabController;
@@ -67,10 +71,12 @@ class _TerminalPageState extends State<TerminalPage>
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
       connToken: widget.connToken,
+      automationRequestId: widget.automationRequestId,
     );
 
     // Create terminal model with specific terminal ID
     _terminalModel = TerminalModel(_ffi, widget.terminalId);
+    bind.automationTerminalViewMounted(sessionId: _ffi.sessionId, terminalId: widget.terminalId);
     debugPrint(
         '[TerminalPage] Terminal model created for terminal ${widget.terminalId}');
 
@@ -192,7 +198,14 @@ class _TerminalPageState extends State<TerminalPage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return Scaffold(
+    return AutomationSessionView(ffi: _ffi, containDialogs: true, isActive: () {
+      final state = widget.tabController.state.value;
+      return state.selected >= 0 && state.selected < state.tabs.length && state.tabs[state.selected].key == widget.tabKey;
+    }, onHumanControl: () {
+      if (_terminalModel.terminalOpened && _terminalModel.terminal.viewHeight > 0 && _terminalModel.terminal.viewWidth > 0) {
+        bind.sessionResizeTerminal(sessionId: _ffi.sessionId, terminalId: widget.terminalId, rows: _terminalModel.terminal.viewHeight, cols: _terminalModel.terminal.viewWidth);
+      }
+    }, child: Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -222,7 +235,7 @@ class _TerminalPageState extends State<TerminalPage>
           );
         },
       ),
-    );
+    ));
   }
 
   @override

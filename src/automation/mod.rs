@@ -1,6 +1,16 @@
-//! Controller-side observation. This module does not expose an MCP transport or input authority.
+//! Controller-side sessions, observations, input authority, and visible GUI operations.
 
 pub mod capture;
+pub mod api;
+pub mod auth;
+pub mod screen;
+pub mod subscriptions;
+pub mod input;
+pub mod control;
 pub(crate) mod decoder;
+pub mod error;
 pub mod frames;
+pub mod gui;
 pub mod sessions;
+pub mod terminals;
+pub mod wire;

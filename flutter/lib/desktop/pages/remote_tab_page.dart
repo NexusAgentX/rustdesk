@@ -101,6 +101,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           tabController: tabController,
           switchUuid: params['switch_uuid'],
           forceRelay: params['forceRelay'],
+          automationRequestId: params['automationRequestId'],
           isSharedPassword: params['isSharedPassword'],
         ),
       ));
@@ -426,6 +427,14 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
 
     dynamic returnValue;
     // for simplify, just replace connectionId
+    if (call.method == 'automation_close') {
+      final args = jsonDecode(call.arguments);
+      for (final tab in List<TabInfo>.from(tabController.state.value.tabs)) {
+        final page = tab.page as RemotePage;
+        if (bind.automationCanClose(requestId: args['request_id'], sessionId: page.ffi.sessionId)) tabController.closeBy(tab.key);
+      }
+      return true;
+    }
     if (call.method == kWindowEventNewRemoteDesktop) {
       final args = jsonDecode(call.arguments);
       final id = args['id'];
@@ -474,6 +483,7 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
           tabController: tabController,
           switchUuid: switchUuid,
           forceRelay: args['forceRelay'],
+          automationRequestId: args['automationRequestId'],
           isSharedPassword: args['isSharedPassword'],
         ),
       ));

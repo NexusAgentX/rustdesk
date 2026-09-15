@@ -559,6 +559,23 @@ Widget _keepScaleBuilder(BuildContext context, Widget? child) {
 }
 
 _registerEventHandler() {
+  if (isDesktop && desktopType == DesktopType.main) {
+    platformFFI.registerEventHandler('automation_close', 'automation_close', (evt) async {
+      await rustDeskWinManager.closeAutomationSession(evt['kind'], evt['request_id'], evt['peer_id']);
+    });
+    platformFFI.registerEventHandler('automation_open', 'automation_open', (evt) async {
+      final requestId = evt['request_id'];
+      try {
+        if (evt['kind'] == 'terminal') {
+          await rustDeskWinManager.newTerminal(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId == '' ? null : requestId, terminalId: int.tryParse(evt['terminal_id'] ?? ''));
+        } else {
+          await rustDeskWinManager.newRemoteDesktop(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId);
+        }
+      } catch (_) {
+        bind.automationOpenFailed(requestId: requestId);
+      }
+    });
+  }
   if (isDesktop && desktopType != DesktopType.main) {
     platformFFI.registerEventHandler('theme', 'theme', (evt) async {
       String? dark = evt['dark'];

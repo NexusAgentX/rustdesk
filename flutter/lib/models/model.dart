@@ -3745,6 +3745,7 @@ class FFI {
   /// Start with the given [id]. Only transfer file if [isFileTransfer], only view camera if [isViewCamera], only port forward if [isPortForward].
   void start(
     String id, {
+    String? automationRequestId,
     bool isFileTransfer = false,
     bool isViewCamera = false,
     bool isPortForward = false,
@@ -3788,7 +3789,14 @@ class FFI {
     final isNewPeer = tabWindowId == null;
     // If tabWindowId != null, this session is a "tab -> window" one.
     // Else this session is a new one.
-    if (isNewPeer) {
+    if (isNewPeer && automationRequestId != null) {
+      final error = bind.automationAddSession(requestId: automationRequestId, sessionId: sessionId);
+      if (error.isNotEmpty) {
+        closed = true;
+        bind.automationOpenFailed(requestId: automationRequestId);
+        return;
+      }
+    } else if (isNewPeer) {
       // ignore: unused_local_variable
       final addRes = bind.sessionAddSync(
         sessionId: sessionId,

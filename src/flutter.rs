@@ -1862,6 +1862,8 @@ pub fn start_global_event_stream(s: StreamSink<String>, app_type: String) -> Res
             );
         }
     }
+    #[cfg(all(feature = "mcp", target_os = "macos"))]
+    { drop(lock); if app_type_values[0] == APP_TYPE_MAIN { crate::mcp::gui_ready(); } }
     Ok(())
 }
 
@@ -2337,6 +2339,11 @@ pub(super) mod async_tasks {
 
     #[inline]
     pub fn start_flutter_async_runner() {
+        #[cfg(all(feature = "mcp", target_os = "macos"))]
+        {
+            static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+        }
         std::thread::spawn(start_flutter_async_runner_);
     }
 
@@ -2345,8 +2352,11 @@ pub(super) mod async_tasks {
         let _ = TX_QUERY_ONLINES.lock().unwrap().take();
     }
 
-    #[tokio::main(flavor = "current_thread")]
+    #[cfg_attr(all(feature = "mcp", target_os = "macos"), tokio::main(flavor = "multi_thread"))]
+    #[cfg_attr(not(all(feature = "mcp", target_os = "macos")), tokio::main(flavor = "current_thread"))]
     async fn start_flutter_async_runner_() {
+        #[cfg(all(feature = "mcp", target_os = "macos"))]
+        crate::mcp::install_runtime();
         // Only one task is allowed to run at the same time.
         let (tx_onlines, rx_onlines) = sync_channel::<Vec<String>>(1);
         TX_QUERY_ONLINES.lock().unwrap().replace(tx_onlines);

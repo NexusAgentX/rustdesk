@@ -1286,6 +1286,8 @@ impl<T: InvokeUiSession> Session<T> {
     }
 
     pub fn reconnect(&self, force_relay: bool) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        self.lc.write().unwrap().automation_forget_credentials();
         // 1. If current session is connecting, do not reconnect.
         // 2. If the connection is established, send `Data::Close`.
         // 3. If the connection is disconnected, do nothing.
@@ -1771,6 +1773,8 @@ impl<T: InvokeUiSession> Interface for Session<T> {
     }
 
     fn send(&self, data: Data) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let Some(data) = crate::automation::wire::wrap_gui(self, data) else { return };
         if let Some(sender) = self.sender.read().unwrap().as_ref() {
             sender.send(data).ok();
         }

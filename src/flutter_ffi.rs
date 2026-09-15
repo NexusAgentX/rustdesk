@@ -33,6 +33,45 @@ use std::{
 
 pub type SessionID = uuid::Uuid;
 
+pub fn automation_add_session(request_id: String, session_id: SessionID) -> SyncReturn<String> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(crate::automation::gui::add_session(&request_id, session_id).err().map(|error| error.message).unwrap_or_default());
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    SyncReturn("Automation is unavailable in this build".to_owned())
+}
+
+pub fn automation_open_failed(request_id: String) {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    crate::automation::gui::failed(&request_id, "Flutter could not create a visible session");
+}
+
+pub fn automation_control_state(session_id: SessionID) -> SyncReturn<String> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    if let Some(session) = crate::automation::sessions::for_view(&session_id) {
+        return SyncReturn(serde_json::json!({"session_id":session.snapshot().session_id,"control":session.control().view()}).to_string());
+    }
+    SyncReturn("{}".to_owned())
+}
+
+pub fn automation_control_action(session_id: SessionID, action: String, approval_id: String) -> SyncReturn<String> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    if let Some(session) = crate::automation::sessions::for_view(&session_id) {
+        let control = session.control();
+        let result = match action.as_str() {
+            "takeover" => control.release(None, false),
+            "approve" => control.approve(&approval_id, true),
+            "reject" => control.approve(&approval_id, false),
+            _ => Err(crate::automation::error::BridgeError::invalid("Unknown local control action")),
+        };
+        crate::automation::wire::wake(&session.snapshot().session_id);
+        if matches!(session.snapshot().state, crate::automation::sessions::ConnectionState::Connecting | crate::automation::sessions::ConnectionState::Disconnected) {
+            if let Some((generation, _)) = control.pending() { control.complete_transition(generation, None); }
+        }
+        return SyncReturn(result.err().map(|error| error.message).unwrap_or_default());
+    }
+    SyncReturn("Session is unavailable".to_owned())
+}
+
 lazy_static::lazy_static! {
     static ref TEXTURE_RENDER_KEY: Arc<AtomicI32> = Arc::new(AtomicI32::new(0));
 }
@@ -668,6 +707,8 @@ pub fn session_send_chat(session_id: SessionID, text: String) {
 
 // Terminal functions
 pub fn session_open_terminal(session_id: SessionID, terminal_id: i32, rows: u32, cols: u32) {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    if crate::automation::terminals::open_from_gui(session_id, terminal_id, rows, cols) { return; }
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
         session.open_terminal(terminal_id, rows, cols);
     } else {
@@ -3167,4 +3208,46 @@ pub mod server_side {
     ) -> jboolean {
         jboolean::from(crate::server::is_clipboard_service_ok())
     }
+}
+
+pub fn mcp_settings() -> SyncReturn<String> {
+    #[cfg(all(feature = "mcp", target_os = "macos"))]
+    return SyncReturn(crate::mcp::settings_json());
+    #[cfg(not(all(feature = "mcp", target_os = "macos")))]
+    SyncReturn("{\"available\":false}".into())
+}
+
+pub fn mcp_configure(enabled: bool, port: u16, approval_required: bool) -> SyncReturn<String> {
+    #[cfg(all(feature = "mcp", target_os = "macos"))]
+    return SyncReturn(crate::mcp::configure(enabled, port, approval_required).err().map(|e|e.message).unwrap_or_default());
+    #[cfg(not(all(feature = "mcp", target_os = "macos")))]
+    { let _ = (enabled, port, approval_required); SyncReturn("MCP is unavailable in this build".into()) }
+}
+
+pub fn mcp_credential(reset: bool) -> SyncReturn<String> {
+    #[cfg(all(feature = "mcp", target_os = "macos"))]
+    return SyncReturn(match crate::mcp::credential(reset) { Ok(token)=>serde_json::json!({"token":token}),Err(error)=>serde_json::json!({"error":error.message}) }.to_string());
+    #[cfg(not(all(feature = "mcp", target_os = "macos")))]
+    { let _ = reset; SyncReturn("{\"error\":\"MCP is unavailable in this build\"}".into()) }
+}
+
+pub fn automation_can_close(request_id: String, session_id: SessionID) -> SyncReturn<bool> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(crate::automation::gui::can_close(&request_id, session_id));
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    { let _ = (request_id,session_id); SyncReturn(false) }
+}
+
+
+pub fn automation_terminal_view_mounted(session_id: SessionID, terminal_id: i32) -> SyncReturn<()> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    crate::automation::terminals::view_mounted(session_id,terminal_id);
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    { let _ = (session_id,terminal_id); }
+    SyncReturn(())
+}
+
+pub fn automation_gui_visibility(session_id: SessionID, visible: bool, minimized: bool) {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    crate::automation::gui::set_visibility(session_id, visible, minimized);
 }

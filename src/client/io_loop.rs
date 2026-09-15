@@ -85,6 +85,8 @@ pub struct Remote<T: InvokeUiSession> {
     sent_close_reason: bool,
     #[cfg(all(feature = "automation", target_os = "macos"))]
     automation: Option<crate::automation::sessions::Connection>,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    automation_wire: crate::automation::wire::WireState,
 }
 
 #[derive(Default)]
@@ -136,6 +138,8 @@ impl<T: InvokeUiSession> Remote<T> {
             sent_close_reason: false,
             #[cfg(all(feature = "automation", target_os = "macos"))]
             automation: None,
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            automation_wire: Default::default(),
         }
     }
 
@@ -246,6 +250,8 @@ impl<T: InvokeUiSession> Remote<T> {
                 let mut last_recv_time = Instant::now();
 
                 loop {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    self.automation_wire.transition(&self.handler, &mut peer).await;
                     tokio::select! {
                         res = peer.next() => {
                             if let Some(res) = res {
@@ -575,12 +581,33 @@ impl<T: InvokeUiSession> Remote<T> {
     }
 
     async fn handle_msg_from_ui(&mut self, data: Data, peer: &mut Stream) -> bool {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        self.automation_wire.transition(&self.handler, peer).await;
         match data {
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::Automation(envelope) => self.automation_wire.send(envelope, peer).await,
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::AutomationWake => {},
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::AutomationLogin(envelope) => crate::automation::auth::handle(&self.handler, envelope, peer).await,
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::AutomationDisconnect(permit) => {
+                if permit.check().is_ok() {
+                    self.automation_wire.release_all(peer).await;
+                    self.send_close_reason(peer, "").await; return false;
+                }
+            }
             Data::Close => {
                 self.send_close_reason(peer, "").await;
                 return false;
             }
             Data::Login((os_username, os_password, password, remember)) => {
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if crate::automation::sessions::for_core(&self.handler).is_some_and(|s|s.control().rejects_unmarked()) { return true; }
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(permit)=crate::automation::sessions::for_core(&self.handler).and_then(|s|s.control().human_permit()) {
+                    self.handler.lc.write().unwrap().automation_authentication(Some(permit),false);
+                }
                 self.handler
                     .handle_login_from_ui(os_username, os_password, password, remember, peer)
                     .await;
@@ -590,6 +617,12 @@ impl<T: InvokeUiSession> Remote<T> {
                 self.check_clipboard_file_context();
             }
             Data::Message(msg) => {
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                let msg=crate::automation::subscriptions::at_send(&self.handler,msg);
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if crate::automation::wire::reject_unmarked(&self.handler, &msg) { return true; }
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                self.automation_wire.observe_manual(&msg);
                 match &msg.union {
                     Some(message::Union::Misc(misc)) => match misc.union {
                         Some(misc::Union::RefreshVideo(_)) => {
@@ -1365,9 +1398,24 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                 }
                 Some(message::Union::Hash(hash)) => {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    let automation_password = crate::automation::gui::take_password(&self.handler);
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    if let Some((permit,password)) = &automation_password {
+                        self.handler.password = password.clone();
+                        self.handler.lc.write().unwrap().automation_authentication(Some(permit.clone()),true);
+                    }
                     self.handler
                         .handle_hash(&self.handler.password.clone(), hash, peer)
                         .await;
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    if automation_password.is_some() { self.handler.password.clear(); }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    if let Some(observer)=&self.automation {
+                        let lc=self.handler.lc.read().unwrap();
+                        if lc.is_terminal_admin {observer.login_error("Terminal requires operating-system authentication in the GUI");}
+                        else if lc.password.is_empty() {observer.login_error(client::LOGIN_MSG_PASSWORD_EMPTY);}
+                    }
                 }
                 Some(message::Union::LoginResponse(lr)) => match lr.union {
                     Some(login_response::Union::Error(err)) => {
@@ -1406,6 +1454,8 @@ impl<T: InvokeUiSession> Remote<T> {
                             }
                         }
                         self.handler.handle_peer_info(pi);
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        self.handler.lc.write().unwrap().automation_forget_credentials();
                         #[cfg(all(target_os = "windows", not(feature = "flutter")))]
                         self.check_clipboard_file_context();
                         if self.handler.is_default() {
@@ -2161,6 +2211,8 @@ impl<T: InvokeUiSession> Remote<T> {
                             lc.set_option(key, opened.service_id.clone());
                         }
                     }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    let response = if let Some(observer) = &self.automation { observer.terminal(response) } else { response };
                     self.handler.handle_terminal_response(response);
                 }
                 _ => {}

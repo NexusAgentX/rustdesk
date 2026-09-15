@@ -6,7 +6,7 @@ build_cache="${RUSTDESK_BUILD_CACHE:-$HOME/Library/Caches/rustdesk-build}"
 export FLUTTER_ROOT="${FLUTTER_ROOT:-$build_cache/flutter-3.24.5}"
 export VCPKG_ROOT="${VCPKG_ROOT:-$build_cache/vcpkg}"
 export PATH="$build_cache/rust-tools/bin:$build_cache/nasm-install/bin:$FLUTTER_ROOT/bin:$HOME/.cargo/bin:$PATH"
-export RUSTUP_TOOLCHAIN="${RUSTDESK_RUST_TOOLCHAIN:-1.81.0}"
+export RUSTUP_TOOLCHAIN="${RUSTDESK_RUST_TOOLCHAIN:-$([[ "${RUSTDESK_MCP:-0}" == 1 ]] && echo 1.97.1 || echo 1.81.0)}"
 export MACOSX_DEPLOYMENT_TARGET=12.3
 export VCPKG_DEFAULT_TRIPLET=arm64-osx
 export VCPKG_DEFAULT_HOST_TRIPLET=arm64-osx
@@ -49,10 +49,16 @@ bridge() {
 
 rust() {
     local features=flutter,hwcodec,unix-file-copy-paste,screencapturekit
+    local cargo_options=(--locked --release)
     if [[ "${RUSTDESK_AUTOMATION:-0}" == 1 ]]; then
         features+=,automation
     fi
-    cargo build --locked --release \
+    if [[ "${RUSTDESK_MCP:-0}" == 1 ]]; then
+        features+=,mcp
+        # Rust 1.97 strip emits a LINKEDIT pool rejected by Xcode 27 (rust-lang/rust#157750).
+        cargo_options+=(--config 'profile.release.package.rustdesk.strip="none"')
+    fi
+    cargo build "${cargo_options[@]}" \
         --features "$features"
     cp target/release/liblibrustdesk.dylib target/release/librustdesk.dylib
 }

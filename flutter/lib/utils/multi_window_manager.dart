@@ -230,6 +230,7 @@ class RustDeskMultiWindowManager {
     bool? isRDP,
     bool? isSharedPassword,
     String? connToken,
+    String? automationRequestId,
   }) async {
     var params = {
       "type": type.index,
@@ -249,6 +250,7 @@ class RustDeskMultiWindowManager {
     if (connToken != null) {
       params['connToken'] = connToken;
     }
+    if (automationRequestId != null) params['automationRequestId'] = automationRequestId;
     final msg = jsonEncode(params);
 
     // separate window for file transfer is not supported
@@ -273,12 +275,14 @@ class RustDeskMultiWindowManager {
     bool? isSharedPassword,
     String? switchUuid,
     bool? forceRelay,
+    String? automationRequestId,
   }) async {
     return await newSession(
       WindowType.RemoteDesktop,
       kWindowEventNewRemoteDesktop,
       remoteId,
       _remoteDesktopWindows,
+      automationRequestId: automationRequestId,
       password: password,
       forceRelay: forceRelay,
       switchUuid: switchUuid,
@@ -353,6 +357,8 @@ class RustDeskMultiWindowManager {
     bool? isSharedPassword,
     bool? forceRelay,
     String? connToken,
+    String? automationRequestId,
+    int? terminalId,
   }) async {
     // Iterate through terminal windows in reverse order to prioritize
     // the most recently added or used windows, as they are more likely
@@ -360,6 +366,9 @@ class RustDeskMultiWindowManager {
     for (final windowId in _terminalWindows.reversed) {
       if (await DesktopMultiWindow.invokeMethod(
           windowId, kWindowEventActiveSession, remoteId)) {
+        if (terminalId != null) {
+          await DesktopMultiWindow.invokeMethod(windowId, kWindowEventNewTerminal, jsonEncode({'id': remoteId, 'terminalId': terminalId, 'forceRelay': forceRelay, 'automationRequestId': automationRequestId}));
+        }
         return MultiWindowCallResult(windowId, null);
       }
     }
@@ -374,6 +383,8 @@ class RustDeskMultiWindowManager {
       "forceRelay": forceRelay,
       "isSharedPassword": isSharedPassword,
       "connToken": connToken,
+      "automationRequestId": automationRequestId,
+      "terminalId": terminalId,
     };
     final msg = jsonEncode(params);
 
@@ -381,6 +392,17 @@ class RustDeskMultiWindowManager {
     final windowId = await newSessionWindow(
         WindowType.Terminal, remoteId, msg, _terminalWindows, false);
     return MultiWindowCallResult(windowId, null);
+  }
+
+  Future<void> closeAutomationSession(String kind, String requestId, String peerId) async {
+    final windows = List<int>.from(kind == 'terminal' ? _terminalWindows : _remoteDesktopWindows);
+    for (final windowId in windows) {
+      try {
+        await DesktopMultiWindow.invokeMethod(windowId, 'automation_close', jsonEncode({'request_id': requestId, 'peer_id': peerId}));
+      } catch (error) {
+        debugPrint('Could not deliver MCP close request to window $windowId');
+      }
+    }
   }
 
   Future<MultiWindowCallResult> call(

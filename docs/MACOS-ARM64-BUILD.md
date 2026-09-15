@@ -236,3 +236,78 @@ scripts/build-macos-arm64.sh automation-tests
 | src/automation/mod.rs | 注册新增的导图与解码布局模块。 |
 
 本轮无新增依赖、FFI / Dart 变更、被控端协议变更或子模块更新。automation 关闭时仍编译原路径。
+
+
+## MCP 集成构建与验证
+
+MCP 使用独立的 `mcp` 功能开关，默认构建仍保留官方路径。macOS ARM64 的 MCP 构建使用 Rust 1.97.1、官方 `rmcp =3.3.0` 和 Axum 0.8，复用上面的 Flutter、原生依赖及固定官方提交。
+
+```bash
+RUSTDESK_MCP=1 scripts/build-macos-arm64.sh bridge
+RUSTDESK_MCP=1 scripts/build-macos-arm64.sh rust
+RUSTDESK_MCP=1 scripts/build-macos-arm64.sh gui
+```
+
+复现 MCP 构建配置下的两组测试：
+
+```bash
+source scripts/build-macos-arm64.sh check
+RUSTUP_TOOLCHAIN=1.97.1 cargo test --locked --release --lib --features mcp,hwcodec,unix-file-copy-paste,screencapturekit automation::
+RUSTUP_TOOLCHAIN=1.97.1 cargo test --locked --release --lib --features mcp,hwcodec,unix-file-copy-paste,screencapturekit mcp::
+```
+
+Rust 1.97.1 的符号剥离会产生未按 8 字节对齐的 Mach-O LINKEDIT 字符串表，被 Xcode 27 链接器拒绝，详见 [Rust 上游问题 #157750](https://github.com/rust-lang/rust/issues/157750)。脚本仅对 MCP 构建中的 RustDesk 包覆盖 `profile.release.package.rustdesk.strip="none"`，不修改其他平台或官方基线的 release 配置。已验证实际动态库字符串表对齐为 0（模 8），最小动态库加载也通过。
+
+最终源代码验证：
+
+- 桥接测试 38 项通过：连接与认证状态分离、帧缓存和多屏几何、重连/布局隔离、控制权代次、终端原始输出及缓存覆盖、实体键映射，以及接管后立即唤醒等待中的输入、释放按键并拒绝旧发送队列；关闭会话仍可在保留期内读取完成记录。
+- MCP 测试 5 项通过：严格参数、精确 Bearer 匹配、真实 HTTP 初始化与双客户端隔离、20 个工具输入/输出 schema、Origin/正文限制、并发 operation ID 重试及原始结果重放；工具响应容量耗尽时心跳和取消通知仍可处理。
+- Flutter 静态分析无 error；仍有上游既有警告和提示。关闭新功能的官方路径使用 Rust 1.81.0，`cargo check --locked` 通过。
+- 最终 Rust release（动态库与程序）和 Flutter GUI 构建通过，产物约 71.5 MB，`codesign --verify --deep --strict` 通过。重启最终产物后，实际 HTTP 初始化、会话列举、设置页 running 状态及 agent 列表均正常。
+- 对变更文件、联调脚本与构建日志检查临时密码，匹配数为 0。测试连接已清理，MCP 服务在最终交付时关闭，默认人工批准仍保持开启。
+
+本轮被控端由用户提供，为支持终端的 Windows 10 单屏设备。设备临时密码不保存到文档、脚本或普通日志。真实双显示器验收尚无设备，当前多屏证据仅来自自动化几何与缓存隔离测试。
+
+
+### MCP 实机联调记录（2026-09-15）
+
+以下结果来自本地 MCP 构建连接用户提供的 Windows 10 单屏测试机。临时密码只用于认证请求，没有保存到测试脚本、本文档或普通日志；测试文本仅输入未保存的记事本，终端使用回显、Shell 临时变量、只读版本查询和显式退出。测试结束已关闭临时记事本且未保存文件。远端只读查询报告 Windows 10.0.19045、RustDesk 1.4.9+67；没有核验其二进制哈希。
+
+| 验证项 | 已观察结果 |
+| --- | --- |
+| 服务与 agent | GUI 启停对应真实监听；两个 MCP 客户端同时连接，设置页分别显示名称、版本、agent_id、绑定的核心会话与 GUI / 终端实例。 |
+| 会话独占 | 第二个 agent 绑定已占用的桌面返回 SESSION_BUSY；仍可独立打开同设备的终端连接。解绑后另一 agent 可绑定，保留 Human 模式；原引用不可读取新绑定。 |
+| 可见桌面与图片 | AI 创建可见桌面，返回 authenticated / ready；截图为远端解码 PNG，980 × 606，包含真实帧序号和时间。读取与 GUI 同时显示，未消费 GUI 渲染缓冲。 |
+| 输入 | MCP 打开运行窗口及记事本；精确文本 ABC abc 123 . : 和中文显示正确；实体 Shift + A / 释放 Shift + B 得到 Ab。远端中文输入法仍按自己的规则处理实体键。 |
+| 缩放坐标 | 490 × 303 截图上的菜单坐标正确映射到 980 × 606 桌面；点击命中预期菜单。 |
+| 重试 | 同一 operation_id 重试文本输入不重复发送；终端计数自增重试只得到 RD_COUNTER=1。 |
+| 人工接管 | AI 模式 GUI 点击和文字输入被阻挡；人工接管后 AI 写入返回 HUMAN_CONTROL，读取仍可用。保持按住的 Shift 被释放。持续拖动测试中实际点击 GUI 接管，活动批次部分执行后停止，排队批次执行前被拒绝，二者均返回 CONTROL_EXPIRED；释放一个键与一个鼠标按钮，release_error 为 null。 |
+| 接管批准 | 主动让出、GUI 批准、旧引用 CONTROL_EXPIRED 均已观察；重复申请保留相同批准 ID 与截止时间，未批准请求 60 秒后 expired；取消可重复调用，GUI 拒绝返回 rejected。终端密码弹窗显示时，提示条上的接管与批准按钮仍可点击。 |
+| 最小化 | GUI 状态变为 minimized；最小化后仍收到新的远端帧，时间与帧序号均更新。 |
+| 终端 | 可见终端创建、精确输入、原始 ANSI / UTF-8 / base64 输出、调整 PTY 为 100 × 30、第二实例创建与单独关闭均通过；另一个实例保持可用。Shell 执行 exit 7 后，关闭事件实际返回 shell_exit_code=7；此字段不解释为单条命令退出码。 |
+| 认证与重连 | 错误密码返回 awaiting_auth / Wrong Password；认证工具提交错误密码返回 AUTH_FAILED，提交当前挑战的正确密码后认证并打开终端。显式断开返回 disconnected / Human，旧终端记录 closed、未知退出码保持 null。重连后临时密码不被复用，返回新的认证挑战和控制引用。 |
+| 停止与离开 | MCP 停止后监听关闭、agent 清空、提示条消失，原 GUI 终端仍能执行人工输入 echo afterstop。DELETE 结束 MCP 逻辑会话后也撤销绑定，保留 GUI；无 GET 事件流且不回答 ping 的客户端租约到期后返回 HTTP 404，原会话可重新绑定且保持 Human。启用状态保存后退出并重启，服务自动恢复为 running。 |
+
+联调发现并修复：官方桌面端在认证前只报告权限拒绝，需要在成功 PeerInfo 后应用协议允许默认值并保留显式拒绝；子窗口可见性应使用 desktop_multi_window；拖动延时与排队等待需要被控制权变化唤醒；终端认证弹窗应限制在内容区，不能覆盖可靠的接管入口。这些修复均已使用新版进行上述实机复测。另修复长期有效的当前引用在关闭时立即被淘汰的问题：旧引用保留期从被替换时开始计算，自动化测试覆盖长期引用的退休计时及关闭记录；新创建终端连接关闭后，实机读取确认 Closed、GUI registered=false。
+
+### MCP 集成的既有路径回归范围
+
+本轮检查以最终 diff 为准；新增远控逻辑留在 src/automation，MCP 传输和工具适配留在 src/mcp。既有文件的必要变化如下。
+
+| 文件 | 变化及必要性 |
+| --- | --- |
+| Cargo.toml / Cargo.lock、src/lib.rs | 增加默认关闭、仅 macOS 使用的 mcp 依赖与模块；SDK 引入共享 async-trait / serde_json 解析版本变化，需同时验证 feature off 编译。子模块 gitlink 不变。 |
+| src/flutter.rs | 复用原 Flutter 异步运行器，MCP 构建使用多线程 Tokio 并防止重复启动；主 GUI 注册事件后才恢复持久化 MCP 启用状态。关闭 feature 保留原运行器。 |
+| src/client.rs | 新增 cfg 限定的内部消息与临时认证标记；最终登录发送检查控制权，AI 密码不进入官方保存或重连路径。人工认证沿原函数执行。 |
+| src/client/io_loop.rs | 在实际发送位置执行输入门控、释放与认证钩子；观察实际权限、认证、终端事件。终端字节复制供桥接缓存，GUI 仍接收原有响应。 |
+| src/ui_session_interface.rs | 人工输入进入队列时携带控制代次，重连清理 AI 临时凭据；防止排队旧输入在接管后继续执行。 |
+| src/flutter_ffi.rs | 只新增 MCP 设置、控制权、可见会话与终端挂载接口，以及终端打开的薄钩子；原操作函数签名不变。 |
+| src/automation/sessions.rs / mod.rs | 扩充已有桥接观察层的认证挑战、权限、终端及关闭记录；回收失去 GUI 核心的状态，避免过期引用存活。 |
+| flutter/lib/main.dart、utils/multi_window_manager.dart、models/model.dart | 将内部打开 / 关闭请求送到真实 GUI 窗口，传递不含密码的保留请求 ID；普通会话创建继续走原入口。 |
+| flutter/lib/desktop/pages/remote_page.dart / remote_tab_page.dart | 添加会话提示条、只读区域和匹配会话的关闭分支，原画面与工具栏实现保留。 |
+| flutter/lib/desktop/pages/terminal_page.dart / terminal_tab_page.dart / terminal_connection_manager.dart | 传递创建请求、确认标签已挂载、显示控制条；MCP 构建的认证弹窗限制在内容区，保证接管按钮可点击。关闭工具只移除对应核心的视图，人工标签关闭流程不改写。 |
+| flutter/lib/desktop/pages/desktop_setting_page.dart | 支持 MCP 的构建才新增设置 Tab，设置组件独立。 |
+| src/lang/*.rs | 仅追加新界面键；中文提供翻译，其他语言保留空值回退，意大利语条目不改译。 |
+| scripts/build-macos-arm64.sh | 显式 MCP 构建选择对应工具链与符号剥离修正；默认仍为 Rust 1.81.0 官方 GUI。 |
+
+真实双屏的屏幕切换、不同原点与缩放组合、显示器热插拔尚未实机验收。当前发布目标仅为本机 macOS ARM64 开发产物；没有验证其他主控平台或正式签名、公证分发。

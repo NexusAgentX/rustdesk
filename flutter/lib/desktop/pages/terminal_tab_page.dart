@@ -55,6 +55,7 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
       isSharedPassword: params['isSharedPassword'],
       forceRelay: params['forceRelay'],
       connToken: params['connToken'],
+      automationRequestId: params['automationRequestId'],
     ));
   }
 
@@ -65,6 +66,7 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
     bool? isSharedPassword,
     bool? forceRelay,
     String? connToken,
+    String? automationRequestId,
   }) {
     final tabKey = '${peerId}_$terminalId';
     final alias = bind.mainGetPeerOptionSync(id: peerId, key: 'alias');
@@ -86,6 +88,7 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
         tabController: tabController,
         forceRelay: forceRelay,
         connToken: connToken,
+        automationRequestId: automationRequestId,
       ),
     );
   }
@@ -311,6 +314,17 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
     rustDeskWinManager.setMethodHandler((call, fromWindowId) async {
       print(
           "[Remote Terminal] call ${call.method} with args ${call.arguments} from window $fromWindowId");
+      if (call.method == 'automation_close') {
+        final args = jsonDecode(call.arguments);
+        final ffi = TerminalConnectionManager.getExistingConnection(args['peer_id']);
+        if (ffi != null && bind.automationCanClose(requestId: args['request_id'], sessionId: ffi.sessionId)) {
+          for (final tab in List<TabInfo>.from(tabController.state.value.tabs)) {
+            if (!bind.automationCanClose(requestId: args['request_id'], sessionId: ffi.sessionId)) break;
+            if ((tab.page as TerminalPage).id == args['peer_id']) tabController.closeBy(tab.key);
+          }
+        }
+        return true;
+      }
       if (call.method == kWindowEventNewTerminal) {
         final args = jsonDecode(call.arguments);
         final id = args['id'];
@@ -324,6 +338,7 @@ class _TerminalTabPageState extends State<TerminalTabPage> {
           isSharedPassword: args['isSharedPassword'],
           forceRelay: args['forceRelay'],
           connToken: args['connToken'],
+          automationRequestId: args['automationRequestId'],
         ));
       } else if (call.method == kWindowEventRestoreTerminalSessions) {
         _restoreSessions(call.arguments);

@@ -1737,6 +1737,12 @@ pub struct LoginConfigHandler {
     pub is_terminal_admin: bool,
     hash: Hash,
     password: Vec<u8>, // remember password for reconnect
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    automation_ephemeral_password: bool,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub(crate) automation_auth_permit: Option<crate::automation::control::Permit>,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub(crate) automation_auth_result: Option<crate::automation::error::Result<()>>,
     pub remember: bool,
     config: PeerConfig,
     pub port_forward: (String, i32),
@@ -1779,6 +1785,19 @@ impl Deref for LoginConfigHandler {
 }
 
 impl LoginConfigHandler {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub(crate) fn automation_authentication(&mut self, permit: Option<crate::automation::control::Permit>, clear: bool) {
+        if clear { self.password.clear(); }
+        self.automation_ephemeral_password = permit.as_ref().is_some_and(|p|!p.human);
+        self.automation_auth_permit=permit;
+        self.automation_auth_result=None;
+    }
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub(crate) fn automation_forget_credentials(&mut self) {
+        if self.automation_ephemeral_password { self.password.clear(); self.remember=!self.config.password.is_empty(); }
+        self.automation_ephemeral_password=false;self.automation_auth_permit=None;
+    }
+
     /// Initialize the login config handler.
     ///
     /// # Arguments
@@ -2549,7 +2568,11 @@ impl LoginConfigHandler {
         config.info = serde;
         let password = self.password.clone();
         let password0 = config.password.clone();
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let password = if self.automation_ephemeral_password { password0.clone() } else { password };
         let remember = self.remember;
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let remember = if self.automation_ephemeral_password { !password0.is_empty() } else { remember };
         let hash = self.hash.clone();
         if remember {
             // remember is true: use PeerConfig password or ui login
@@ -3645,6 +3668,8 @@ async fn send_login(
         .read()
         .unwrap()
         .create_login_msg(os_username, os_password, password);
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    if crate::automation::auth::send_login(&lc, peer, &msg_out).await { return; }
     allow_err!(peer.send(&msg_out).await);
 }
 
@@ -3801,6 +3826,14 @@ pub trait Interface: Send + Clone + 'static + Sized {
 /// Data used by the client interface.
 #[derive(Clone)]
 pub enum Data {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    Automation(crate::automation::wire::Envelope),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationWake,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationLogin(crate::automation::auth::Envelope),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationDisconnect(crate::automation::control::Permit),
     Close,
     RejectInsecureConnection,
     Login((String, String, String, bool)),

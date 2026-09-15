@@ -1,6 +1,6 @@
 # RustDesk MCP 接口与服务设计
 
-更新时间：2026-09-15。状态：**首版接口与服务设计已定稿，采用第二版方案；桥接层开发中，MCP 工具及服务尚未实现**。当前进度见 [构建与开发记录](MACOS-ARM64-BUILD.md)。
+更新时间：2026-09-15。状态：**首版接口与服务设计已定稿，采用第二版方案；首版桥接层、20 个 MCP 工具和 GUI 已实现，单屏实机闭环通过，双屏实机待验收**。当前进度见 [构建与开发记录](MACOS-ARM64-BUILD.md)。
 
 依据：[MCP 主控客户端需求](MCP-CONTROLLER-REQUIREMENTS.md)。需求方已确认本设计中的工具命名、字段、调用契约及服务分层，作为首版实现和验证依据；配套产品需求已同步。
 
@@ -62,7 +62,7 @@
 - 控制权切换或远端重连后产生新引用。旧引用在原绑定有效时仍可读取，读取结果带回当前引用；旧引用不能继续写入，不能自动替换成新代次执行。
 - 接管请求也检查引用代次，防止旧的排队请求在新一轮人类接管后复活。引用过期错误返回当前简要状态，AI 可读取后显式重新请求。
 - 让出和解绑以绑定为清理范围，取消批准以 approval ID 为范围；对旧请求重放不影响其他绑定。迟到的让出若跨越了新控制代次，应返回 `CONTROL_EXPIRED`，不撤销新的授予。
-- 引用不跨解绑或 MCP 重连复用。当前引用在绑定有效时不被淘汰；旧引用记录每绑定最多 64 个，旧代次保留 5 分钟；超过保留范围返回 `SESSION_REF_EXPIRED`，不退化为按 session ID 无条件执行。
+- 引用不跨解绑或 MCP 重连复用。当前引用在绑定有效时不被淘汰；旧引用记录每绑定最多 64 个，从当前引用被替换时起，旧代次保留 5 分钟；超过保留范围返回 `SESSION_REF_EXPIRED`，不退化为按 session ID 无条件执行。
 
 ### 2.2 终端与桌面连接
 
@@ -95,7 +95,7 @@
 默认返回的 `SessionView` 包含 `session_id`, `session_ref`, `peer_id`, `kind`, `state`, `control`, `revision`，其中 control 只含 mode 和 approval_required。按需添加：
 
 - 等待认证时返回 `auth_challenge`；等待人工处理时返回 `human_action`；等待接管时返回 `approval`。
-- open/attach 与 get 未指定 after_revision 时返回 `platform`、精简 `displays: [{id,name,primary,width,height}]` 或 `terminals: [{id,state}]`，以及 `can_input`、`can_capture`、`can_use_terminal` 等必要能力判断。
+- open/attach 与 get 未指定 after_revision 时返回 `platform`、精简 `displays: [{id,name,primary,width,height}]` 或 `terminals: [{id,state}]`，以及 `can_input`、`can_capture`、`can_use_terminal` 等必要能力判断。`can_input` 表示当前可通过 AI 发送桌面键鼠，包含控制模式、认证和远端权限判断；`can_use_terminal` 表示终端连接能力，写入仍须 AI 控制权。
 - 能力不支持或未授权时返回对应原因，不把未知解释为允许。
 - 阻塞当前流程时返回 `next_action: {tool, reason}`，建议可执行的下一步；不自动执行建议，不回显密码。
 - 普通输入、终端写入和截图不重复附带完整会话；只返回本次结果、当前 session_ref 和发生变化的控制/连接状态。

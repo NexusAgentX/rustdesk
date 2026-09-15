@@ -1,3 +1,4 @@
+import '../widgets/automation_banner.dart';
 import 'dart:async';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
@@ -45,10 +46,12 @@ class RemotePage extends StatefulWidget {
     this.switchUuid,
     this.forceRelay,
     this.isSharedPassword,
+    this.automationRequestId,
   }) : super(key: key) {
     initSharedStates(id);
   }
 
+  final String? automationRequestId;
   final String id;
   final SessionID? sessionId;
   final int? tabWindowId;
@@ -137,6 +140,7 @@ class _RemotePageState extends State<RemotePage>
       isSharedPassword: widget.isSharedPassword,
       switchUuid: widget.switchUuid,
       forceRelay: widget.forceRelay,
+      automationRequestId: widget.automationRequestId,
       tabWindowId: widget.tabWindowId,
       display: widget.display,
       displays: widget.displays,
@@ -487,7 +491,11 @@ class _RemotePageState extends State<RemotePage>
       );
     }
 
-    return Scaffold(
+    return AutomationSessionView(ffi: _ffi, isActive: () {
+      final state = widget.tabController?.state.value;
+      if (state == null) return true;
+      return state.selected >= 0 && state.selected < state.tabs.length && state.tabs[state.selected].page == widget;
+    }, child: Scaffold(
       backgroundColor: Theme.of(context).colorScheme.background,
       body: Obx(() {
         final imageReady = _ffi.ffiModel.pi.isSet.isTrue &&
@@ -515,7 +523,7 @@ class _RemotePageState extends State<RemotePage>
           return bodyWidget();
         }
       }),
-    );
+    ));
   }
 
   @override

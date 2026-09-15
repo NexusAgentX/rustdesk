@@ -12,6 +12,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
+import 'package:flutter_hbb/desktop/widgets/mcp_settings.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
@@ -58,6 +59,7 @@ enum SettingsTabKey {
   plugin,
   account,
   printer,
+  mcp,
   about,
 }
 
@@ -80,6 +82,7 @@ class DesktopSettingPage extends StatefulWidget {
     if (isWindows &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
       SettingsTabKey.printer,
+    if (jsonDecode(bind.mcpSettings())['available'] == true) SettingsTabKey.mcp,
     SettingsTabKey.about,
   ];
 
@@ -208,6 +211,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           settingTabs
               .add(_TabInfo(tab, 'Printer', Icons.print_outlined, Icons.print));
           break;
+        case SettingsTabKey.mcp:
+          settingTabs.add(_TabInfo(tab, 'MCP', Icons.smart_toy_outlined, Icons.smart_toy));
+          break;
         case SettingsTabKey.about:
           settingTabs
               .add(_TabInfo(tab, 'About', Icons.info_outline, Icons.info));
@@ -241,6 +247,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           break;
         case SettingsTabKey.printer:
           children.add(const _Printer());
+          break;
+        case SettingsTabKey.mcp:
+          children.add(const McpSettings());
           break;
         case SettingsTabKey.about:
           children.add(const _About());
