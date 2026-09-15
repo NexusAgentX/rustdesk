@@ -1388,6 +1388,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         if let Some(observer) = &self.automation {
                             observer.authenticated(&pi);
                         }
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        self.sync_automation_layout();
                         let peer_version = pi.version.clone();
                         let peer_platform = pi.platform.clone();
                         self.set_peer_info(&pi);
@@ -1875,6 +1877,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         if let Some(observer) = &self.automation {
                             observer.switch_display(&s);
                         }
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        self.sync_automation_layout();
                         self.handler.handle_peer_switch_display(&s);
                         if let Some(thread) = self.video_threads.get_mut(&(s.display as usize)) {
                             thread.video_sender.send(MediaData::Reset).ok();
@@ -2138,6 +2142,8 @@ impl<T: InvokeUiSession> Remote<T> {
                     if let Some(observer) = &self.automation {
                         observer.layout(&pi.displays);
                     }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    self.sync_automation_layout();
                     self.handler.set_displays(&pi.displays);
                     self.handler.set_platform_additions(&pi.platform_additions);
                 }
@@ -2454,12 +2460,33 @@ impl<T: InvokeUiSession> Remote<T> {
         }
     }
 
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    fn sync_automation_layout(&mut self) {
+        let Some(observer) = &self.automation else {
+            return;
+        };
+        let revision = observer.layout_revision();
+        for (display, thread) in &mut self.video_threads {
+            if let Some(layout) = &mut thread.automation_layout {
+                match layout.schedule(revision, &thread.video_sender, &thread.video_queue) {
+                    Ok(true) => self.handler.refresh_video(*display as _),
+                    Ok(false) => {}
+                    Err(error) => log::warn!("automation layout: {error}"),
+                }
+            }
+        }
+    }
+
     fn new_video_thread(&mut self, display: usize) {
         let video_queue = Arc::new(RwLock::new(ArrayQueue::new(client::VIDEO_QUEUE_SIZE)));
         let (video_sender, video_receiver) = std::sync::mpsc::channel::<MediaData>();
         let decode_fps = Arc::new(RwLock::new(None));
         let frame_count = Arc::new(RwLock::new(0));
         let discard_queue = Arc::new(RwLock::new(false));
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let automation_layout = self.automation.as_ref().map(|observer| {
+            crate::automation::decoder::DecoderLayout::new(observer.layout_revision())
+        });
         let video_thread = VideoThread {
             video_queue: video_queue.clone(),
             video_sender,
@@ -2467,6 +2494,8 @@ impl<T: InvokeUiSession> Remote<T> {
             frame_count: frame_count.clone(),
             fps_control: Default::default(),
             discard_queue: discard_queue.clone(),
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            automation_layout: automation_layout.clone(),
         };
         let handler = self.handler.ui_handler.clone();
         #[cfg(all(feature = "automation", target_os = "macos"))]
@@ -2485,8 +2514,8 @@ impl<T: InvokeUiSession> Remote<T> {
                   pixelbuffer: bool| {
                 *frame_count.write().unwrap() += 1;
                 #[cfg(all(feature = "automation", target_os = "macos"))]
-                if let Some(observer) = &automation {
-                    observer.frame(display, data, pixelbuffer);
+                if let (Some(observer), Some(layout)) = (&automation, &automation_layout) {
+                    observer.frame_at_layout(display, data, pixelbuffer, layout.revision());
                 }
                 if pixelbuffer {
                     handler.on_rgba(display, data);
@@ -2571,6 +2600,8 @@ struct FpsControl {
 }
 
 struct VideoThread {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    automation_layout: Option<crate::automation::decoder::DecoderLayout>,
     video_queue: Arc<RwLock<ArrayQueue<VideoFrame>>>,
     video_sender: MediaSender,
     decode_fps: Arc<RwLock<Option<usize>>>,

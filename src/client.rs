@@ -2843,6 +2843,8 @@ pub enum MediaData {
     AudioFormat(AudioFormat),
     Reset,
     RecordScreen(bool),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationLayout(Arc<std::sync::atomic::AtomicU64>, u64),
 }
 
 pub type MediaSender = mpsc::Sender<MediaData>;
@@ -2987,6 +2989,14 @@ pub fn start_video_thread<F, T>(
                         if let Some(handler) = video_handler.as_mut() {
                             handler.reset(None);
                         }
+                    }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    MediaData::AutomationLayout(applied, revision) => {
+                        if let Some(handler) = video_handler.as_mut() {
+                            handler.reset(None);
+                        }
+                        *discard_queue.write().unwrap() = true;
+                        applied.store(revision, std::sync::atomic::Ordering::Release);
                     }
                     MediaData::RecordScreen(start) => {
                         let id = session.lc.read().unwrap().id.clone();

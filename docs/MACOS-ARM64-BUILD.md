@@ -155,6 +155,8 @@ open -n "$PWD/flutter/build/macos/Build/Products/Release/RustDesk.app" --args --
 
 ## 桥接开发：会话观察与 CPU 帧缓存
 
+本节记录第一阶段（`df637a04d`）；后续的布局隔离与 PNG 导出进展见下一节。
+
 新增 `automation` Cargo feature，仅在 macOS 下编译桥接模块，默认关闭。它依赖 Flutter，但不启动 HTTP 服务、不提供 AI 写入，也没有新的 GUI 控件。运行中的既有客户端不会因源码编译自动获得这些能力。
 
 ### 已接入的内部路径
@@ -203,3 +205,34 @@ scripts/build-macos-arm64.sh automation-tests
 | scripts/build-macos-arm64.sh | 显式环境变量可启用新 feature，默认构建选择不变。 |
 
 关闭 feature 时所有运行时钩子均不参与编译。新增逻辑位于 src/automation；未变更共享 trait、Session 结构、官方 FFI 签名、Flutter/Dart 代码、被控端协议或子模块。
+
+## 桥接开发：布局隔离与 PNG 导出
+
+### 已实现
+
+- 为每个视频解码线程保留独立的布局修订。官方布局事件改变几何信息后，先清空旧增量帧队列，再向解码消息队列放入布局边界；消费边界时重置解码器并等待关键帧，同时通过官方接口请求刷新。旧回调携带旧修订，不能重新填充新布局的桥接缓存。
+- 旧关键帧仍按原队列顺序消费，GUI 回调保持原入口；新的边界处理仅在 macOS automation 构建且存在观察会话时触发。对共享 MediaData 枚举只增加 cfg 限定的内部消息，未改动现有消息结构或回调签名。
+- 新增内部异步 `automation::capture::capture`：按实际显示器 ID 读取已启用的帧缓存，导出 PNG，并返回尺寸、远端矩形、连接/布局代次、帧序号、接收时间、年龄、新旧与断线标记。比较游标没有更新时返回 None，不重新包装成新画面。
+- 处理 BGRA / RGBA 和行填充；按远端桌面的不透明 RGB 像素编码。默认等比缩小至 1600 × 1600 边界，可设置 1～3840，不放大、不裁剪；PNG 输出超过 8 MiB 时整体失败，不返回截断图像。
+- 不合成独立光标，`cursor_composited=false`；原视频已嵌入的光标像素保留并标记。不会读取本机窗口截图。
+- 编码在 spawn_blocking 中进行，全局最多两个编码任务；取消调用后，未退出的编码任务仍持有名额。编码结束再次核对截图开关、会话状态及连接/布局代次。
+- 提供纯几何的截图像素中心到远端坐标换算，覆盖负原点、缩放和越界拒绝；不代表已取得输入权限，也不直接发送输入。
+
+### 验证与范围
+
+- 关闭 automation 的 `cargo check --locked` 通过。
+- 最终 release 测试 19 项全部通过；含 automation 的 Rust release 与 Flutter GUI 构建通过，GUI 产物约 62.3 MB，打包后的 `codesign --verify --deep --strict` 通过。当前运行中的客户端未重启。
+- 测试使用独立像素缓冲和模拟会话事件；覆盖 PNG 解码后的颜色、行填充、尺寸边界、超限失败、双屏隔离、负坐标、旧布局回调拒绝，以及断线陈旧状态。尚未通过运行中的真实远端会话导出图片，不能据此验收完整多屏或 GUI 运行时回归。
+- 本机固定构建启用 hwcodec、不启用 vram。源码的 VP8 / VP9 / AV1 与 H264 / H265 RAM 解码路径输出 CPU 像素；GUI 后续使用纹理渲染不消耗桥接副本。GPU-only 绑定切换或回读未实现；不能将其他 features 组合中的 TextureOnly 状态视为可截图。
+- 仍需接入显示器订阅并集、主屏解析、有界等待和官方刷新策略、agent 绑定的 snapshot_id / 映射过期管理及 MCP image block。当前内部函数不暴露为 MCP 工具，不提供 AI 输入。
+
+### 本轮既有路径的回归范围
+
+| 文件 | 行为变化及必要性 |
+| --- | --- |
+| src/client.rs | 解码消息循环新增 automation 布局边界分支，负责重置解码器与等待关键帧；必须在解码线程消费消息的位置建立边界，防止缓存清空后旧解码结果回流。 |
+| src/client/io_loop.rs | 布局事件同步到各解码线程，必要时请求刷新；解码回调携带线程实际应用的布局修订。新增状态只用于 automation，未改写原有视频消息发送、GUI 渲染或输入路径。 |
+| src/automation/sessions.rs | 接收帧时检查布局修订，导图完成时复查会话有效性；用于拒绝过期画面。 |
+| src/automation/mod.rs | 注册新增的导图与解码布局模块。 |
+
+本轮无新增依赖、FFI / Dart 变更、被控端协议变更或子模块更新。automation 关闭时仍编译原路径。

@@ -157,6 +157,28 @@ impl SessionHandle {
         Ok(result)
     }
 
+    pub(crate) fn capture_state(&self, stamp: FrameStamp) -> Result<ConnectionState, FrameError> {
+        let state = self.0.state.lock().unwrap();
+        if !state.capture_enabled {
+            return Err(FrameError::CaptureDisabled);
+        }
+        if state.snapshot.state == ConnectionState::Closed
+            || state.snapshot.connection_epoch != stamp.connection_epoch
+        {
+            return Err(FrameError::StaleConnection);
+        }
+        if state.snapshot.layout_revision != stamp.layout_revision {
+            return Err(FrameError::StaleLayout);
+        }
+        if !matches!(
+            state.snapshot.state,
+            ConnectionState::Ready | ConnectionState::Disconnected
+        ) {
+            return Err(FrameError::NoFrame);
+        }
+        Ok(state.snapshot.state)
+    }
+
     fn notify(&self, state: &mut State) {
         state.snapshot.revision += 1;
         self.0.changes.send_replace(state.snapshot.revision);
@@ -321,9 +343,31 @@ impl Connection {
         });
     }
 
-    pub(crate) fn frame(&self, display: usize, image: &scrap::ImageRgb, pixelbuffer: bool) {
+    pub(crate) fn layout_revision(&self) -> u64 {
+        self.session
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .snapshot
+            .layout_revision
+    }
+
+    #[cfg(test)]
+    fn frame(&self, display: usize, image: &scrap::ImageRgb, pixelbuffer: bool) {
+        self.frame_at_layout(display, image, pixelbuffer, self.layout_revision());
+    }
+
+    pub(crate) fn frame_at_layout(
+        &self,
+        display: usize,
+        image: &scrap::ImageRgb,
+        pixelbuffer: bool,
+        layout_revision: u64,
+    ) {
         let mut state = self.session.0.state.lock().unwrap();
         if state.snapshot.connection_epoch != self.epoch
+            || state.snapshot.layout_revision != layout_revision
             || !state.snapshot.authenticated
             || !matches!(
                 state.snapshot.state,
@@ -527,6 +571,7 @@ pub fn get(session_id: &str) -> Option<SessionHandle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hbb_common::tokio;
     use scrap::{ImageFormat, ImageRgb};
 
     fn fixture() -> (SessionHandle, PeerInfo, ImageRgb) {
@@ -611,6 +656,123 @@ mod tests {
         assert!(cached.disconnected);
         assert!(cached.is_stale());
         assert_eq!(cached.newer_than_cursor, None);
+    }
+
+    #[test]
+    fn queued_old_layout_pixels_cannot_repopulate_new_layout() {
+        let (session, mut peer, image) = fixture();
+        session.set_capture_enabled(true);
+        let connection = session.begin(0).unwrap();
+        connection.authenticated(&peer);
+        let old_layout = connection.layout_revision();
+        connection.frame_at_layout(0, &image, true, old_layout);
+        peer.displays[0].x = 20;
+        connection.layout(&peer.displays);
+        connection.frame_at_layout(0, &image, true, old_layout);
+        assert_eq!(session.read_frame(0, None).err(), Some(FrameError::NoFrame));
+        assert_eq!(session.snapshot().state, ConnectionState::AwaitingFrame);
+        connection.frame_at_layout(0, &image, true, connection.layout_revision());
+        assert_eq!(
+            session
+                .read_frame(0, None)
+                .unwrap()
+                .frame
+                .stamp
+                .layout_revision,
+            connection.layout_revision()
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_returns_png_and_honest_freshness_without_consuming_gui_pixels() {
+        use crate::automation::capture::{capture, CaptureOptions};
+        let (session, peer, image) = fixture();
+        session.set_capture_enabled(true);
+        let connection = session.begin(0).unwrap();
+        connection.authenticated(&peer);
+        connection.frame(0, &image, true);
+        let output = capture(&session, 0, CaptureOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            image::load_from_memory(&output.png)
+                .unwrap()
+                .to_rgb8()
+                .as_raw(),
+            &[3, 2, 1]
+        );
+        assert_eq!(image.raw, [1, 2, 3, 255]);
+        assert_eq!(output.remote_rect.x, -1920);
+        assert!(!output.is_stale);
+        assert!(capture(
+            &session,
+            0,
+            CaptureOptions {
+                after_frame_seq: Some(output.stamp.sequence),
+                ..Default::default()
+            }
+        )
+        .await
+        .unwrap()
+        .is_none());
+        connection.disconnected();
+        let old = capture(&session, 0, CaptureOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(old.disconnected && old.is_stale);
+        session.begin(1).unwrap();
+        assert!(capture(&session, 0, CaptureOptions::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn display_captures_keep_their_pixels_and_geometry_separate() {
+        use crate::automation::capture::{capture, CaptureOptions};
+        let (session, mut peer, mut image) = fixture();
+        let mut second = peer.displays[0].clone();
+        second.x = 100;
+        second.y = -200;
+        peer.displays.push(second);
+        session.set_capture_enabled(true);
+        let connection = session.begin(0).unwrap();
+        connection.authenticated(&peer);
+        connection.frame(0, &image, true);
+        image.raw = vec![9, 8, 7, 255];
+        connection.frame(1, &image, true);
+        let first = capture(&session, 0, CaptureOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = capture(&session, 1, CaptureOptions::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.remote_point(0, 0), Some((-1920, 0)));
+        assert_eq!(second.remote_point(0, 0), Some((100, -200)));
+        assert_eq!(
+            image::load_from_memory(&first.png)
+                .unwrap()
+                .to_rgb8()
+                .as_raw(),
+            &[3, 2, 1]
+        );
+        assert_eq!(
+            image::load_from_memory(&second.png)
+                .unwrap()
+                .to_rgb8()
+                .as_raw(),
+            &[7, 8, 9]
+        );
+        assert_ne!(first.stamp.display_id, second.stamp.display_id);
+        assert!(session.capture_state(first.stamp).is_ok());
+        session.set_capture_enabled(false);
+        assert_eq!(
+            session.capture_state(first.stamp),
+            Err(FrameError::CaptureDisabled)
+        );
     }
 
     #[test]
