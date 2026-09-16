@@ -114,10 +114,12 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "wait_timeout":"Observation timeout does not cancel or replay a previously sent request. A stored pending result has unknown final outcome; query current session or terminal state.",
             "completion":"completed describes the individual tool contract; input delivery is not remote application completion.",
             "settings":{"write_mode":"explicit_value","scope_required":true,"scopes":["session","binding","peer_preference","global","local_window","remote_machine"]},
-            "credentials":"Never included in operation arguments or capability results; authentication values are single-use.",
+            "credentials":"Never included in operation arguments or capability results; authentication submissions are single-use; TCP listeners retain isolated login state in memory until closed.",
             "future_features":"Capabilities list only implemented MCP operations. GUI-only features are not promises of MCP support."
         }
     });
+    result["capabilities"]["tcp_tunnels_read"]=cap(Some(s.kind==SessionKind::TcpTunnel),Some(true),false,false,&["rd_tunnel_list"]);
+    result["capabilities"]["tcp_tunnels_write"]=cap(Some(s.kind==SessionKind::TcpTunnel),Some(s.state==ConnectionState::Ready),true,false,&["rd_tunnel_add","rd_tunnel_remove","rd_tunnel_authenticate"]);
     if desktop {
         if let Some(core) = crate::automation::sessions::core(&s.session_id) {
             let lc = core.lc.read().unwrap();

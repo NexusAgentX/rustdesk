@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter_hbb/desktop/widgets/automation_banner.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -34,6 +35,7 @@ class PortForwardPage extends StatefulWidget {
     required this.isSharedPassword,
     this.forceRelay,
     this.connToken,
+    this.automationRequestId,
   }) : super(key: key);
   final String id;
   final String? password;
@@ -42,6 +44,7 @@ class PortForwardPage extends StatefulWidget {
   final bool? forceRelay;
   final bool? isSharedPassword;
   final String? connToken;
+  final String? automationRequestId;
   final SimpleWrapper<State<PortForwardPage>?> _lastState = SimpleWrapper(null);
 
   FFI get ffi => (_lastState.value! as _PortForwardPageState)._ffi;
@@ -68,6 +71,7 @@ class _PortForwardPageState extends State<PortForwardPage>
     _ffi = FFI(null);
     _ffi.start(widget.id,
         isPortForward: true,
+        automationRequestId: widget.automationRequestId,
         password: widget.password,
         isSharedPassword: widget.isSharedPassword,
         forceRelay: widget.forceRelay,
@@ -92,7 +96,7 @@ class _PortForwardPageState extends State<PortForwardPage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return Scaffold(
+    return AutomationSessionView(ffi: _ffi, containDialogs: true, child: Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: FutureBuilder(future: () async {
         if (!widget.isRDP) {
@@ -124,7 +128,7 @@ class _PortForwardPageState extends State<PortForwardPage>
         }
         return const Offstage();
       }),
-    );
+    ));
   }
 
   buildPrompt(BuildContext context) {

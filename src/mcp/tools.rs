@@ -94,8 +94,8 @@ pub fn definitions() -> Vec<Tool> {
     definition::<FileConflict>("rd_file_conflict_resolve","Resolve a pending same-name conflict with explicit overwrite=true or false (skip). Optionally apply to all remaining conflicts in this job.",false),
     definition::<Read>("rd_capabilities_get","Inspect implemented MCP capabilities for this session, including peer version, permission, control and readiness blockers. Unknown support is not permission. Does not take control.",true),
     definition::<OperationGet>("rd_operation_get","Query this MCP client's retained operation_id without replaying a write. Optional wait_ms waits for local execution, not remote application completion. Original pending results have unknown final outcome; inspect current session or terminal state. Records expire five minutes after execution and when this MCP client ends.",true),
-    definition::<List>("rd_session_list","Discover visible desktop, terminal and file-transfer sessions. Multiple MCP agents may connect; ownership is exclusive per core session.",true),
-    definition::<Open>("rd_session_open","Open a visible GUI session or reuse and attach to an existing one. Only newly created sessions start under AI control. Optional password is single-use connection authentication, never OS login. kind supports desktop, terminal and file_transfer. Optional from_session_ref reuses an authenticated same-peer connection token when available; unsupported token reuse still requires authentication.",false),
+    definition::<List>("rd_session_list","Discover visible desktop, terminal, file-transfer and TCP-tunnel sessions. Multiple MCP agents may connect; ownership is exclusive per core session.",true),
+    definition::<Open>("rd_session_open","Open a visible GUI session or reuse and attach to an existing one. Only newly created sessions start under AI control. Optional password is single-use connection authentication, never OS login. kind supports desktop, terminal, file_transfer and tcp_tunnel. TCP ready means local manager ready, not remote authentication; give its password to tunnel_add instead of session_open. Optional from_session_ref reuses an authenticated same-peer connection token when available; unsupported token reuse still requires authentication.",false),
     definition::<Attach>("rd_session_attach","Attach to an existing core session without changing its control mode. Returns session_ref; fails if another agent owns it.",false),
     definition::<Write>("rd_session_detach","Detach this binding, cancel queued input and return control to the human. Keep the GUI and remote connection.",false),
     definition::<Get>("rd_session_get","Read current session state and session_ref. Optionally wait for a revision change or query an operation_id. Old references remain read-only within the binding.",true),
@@ -108,6 +108,10 @@ pub fn definitions() -> Vec<Tool> {
     definition::<Write>("rd_control_release","Voluntarily return control to the human, invalidate queued AI input and release held keys and buttons. Keep the binding for reading.",false),
     definition::<Capture>("rd_screen_capture","Return a native PNG. source=decoded (default) reads decoded pixels with snapshot_id for input and supports max_width/max_height/after_frame_seq; available under human control. source=remote_original requests the stock toolbar original PNG from peer >=1.4.0, requires AI control, omits resizing/frame cursor and returns no input snapshot_id. wait_ms is a maximum wait, default 0 decoded or 10000 original; original timeout does not undo sending. Optional save_path writes exactly the returned PNG to a new absolute local .png file under AI control; parent must exist and existing targets are never overwritten. Use operation_id for save/request retries. PNG limit 8 MiB.",false),
     definition::<Read>("rd_security_get","Read peer-reported blocking/privacy/elevation state, pending outcomes, SAS support, privacy implementations and permissions. Unknown is not off; fresh=false after disconnect. No GUI optimistic values. Headless OS-login challenges use existing session_authenticate with credentials.kind=os_login. No credentials are returned.",true),
+    definition::<Read>("rd_tunnel_list","List MCP TCP listeners, active stream counts, per-listener authentication challenges and retained errors. Local listening is not remote authentication. Saved GUI forwards are reported separately with unknown runtime state.",true),
+    definition::<TunnelAdd>("rd_tunnel_add","Bind an explicit 127.0.0.1 TCP port in a tcp_tunnel session. Local ports 1..65535; remote host and port required. Remote connection/login begins when a local client connects. Optional password is kept only in isolated listener memory; alternatively inherit a connection token with session_open.from_session_ref. At most 16 listeners and 32 streams each. AI handover/detach closes MCP listeners and streams; no automatic restart.",false),
+    definition::<TunnelRemove>("rd_tunnel_remove","Close one MCP listener and every accepted stream, including in-flight login. Wait for local cleanup; does not modify saved GUI port-forward preferences. Closed entries remain queryable in the last 64 records.",false),
+    definition::<TunnelAuth>("rd_tunnel_authenticate","Submit password or two_factor credentials to the exact tunnel authentication challenge from tunnel_list. Credentials never broadcast across listeners. Sent does not mean authenticated; check state and successful_connections. OS login is unsupported for the stock TCP protocol.",false),
     definition::<Read>("rd_recording_get","Read stock video-only session recording state and the last 64 output-file records in controller memory. Reports per-file writing/finalized/discarded/failed state, path, display, frames and final byte length. Files persist on the controller; history is per visible core session. Shorter-than-one-second or empty recordings are discarded by stock RustDesk. Codec/resolution changes can split files. Query after stop to verify finalization; capture/send are not recording evidence.",true),
     definition::<RecordingSet>("rd_recording_set","Explicitly start/stop stock desktop video recording under AI control. Start requires remote recording permission; stop remains available if permission is revoked. Uses the existing controller video directory and current video streams, with normal local/remote recording indicators. No audio. Start requests a keyframe; confirmed start requires an observed recorded frame, confirmed stop waits for active writers to finish. wait_ms 0..30000 default 10000; timeout does not cancel recording. Recording survives control handover and ends on explicit stop, permission revocation or connection end. Use operation_id for dedupe.",false),
     definition::<ChatSend>("rd_chat_send","Send 1..16384 UTF-8 bytes through stock desktop text chat. Requires ready desktop and AI control, but not keyboard permission. Sent does not mean delivered/read; no peer acknowledgement exists. Outgoing and incoming messages are retained in a bounded controller-memory history, distinct from the clipboard. Use operation_id to prevent duplicate sends.",false),
@@ -529,8 +533,10 @@ pub(super) async fn dispatch(
             let kind = match p.kind {
                 Some(Kind::Terminal) => SessionKind::Terminal,
                 Some(Kind::FileTransfer) => SessionKind::FileTransfer,
+                Some(Kind::TcpTunnel) => SessionKind::TcpTunnel,
                 _ => SessionKind::Desktop,
             };
+            if kind == SessionKind::TcpTunnel && p.password.is_some() { return Err(BridgeError::invalid("For TCP tunnels provide password in rd_tunnel_add, or use from_session_ref")); }
             let token = if let Some(source) = p.from_session_ref {
                 let (source, permit) = api::resolve(agent, &source, false)?;
                 permit.read_check()?;
@@ -708,6 +714,23 @@ pub(super) async fn dispatch(
             Ok(Reply::success(
                 json!({"approval":session.control().cancel_approval(&permit,&p.approval_id)?}),
             ))
+        }
+        "rd_tunnel_list" => {
+            let p:Read=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::tunnels::list(&permit)?))
+        }
+        "rd_tunnel_add" => {
+            let p:TunnelAdd=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            Ok(Reply::success(crate::automation::tunnels::command(permit,crate::automation::tunnels::Command::Add{local_port:p.local_port,remote_host:p.remote_host,remote_port:p.remote_port,password:p.password},10000).await?))
+        }
+        "rd_tunnel_remove" => {
+            let p:TunnelRemove=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            Ok(Reply::success(crate::automation::tunnels::command(permit,crate::automation::tunnels::Command::Remove{id:p.tunnel_id},wait(p.wait_ms,10000)?).await?))
+        }
+        "rd_tunnel_authenticate" => {
+            let p:TunnelAuth=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            let credentials=match p.credentials {Credentials::Password{password}=>crate::automation::tunnels::Credentials::Password(password),Credentials::TwoFactor{code}=>crate::automation::tunnels::Credentials::TwoFactor(code),Credentials::OsLogin{..}=>return Err(BridgeError::new("UNSUPPORTED","Stock TCP tunnels do not support OS-login authentication"))};
+            Ok(Reply::success(crate::automation::tunnels::command(permit,crate::automation::tunnels::Command::Authenticate{id:p.tunnel_id,challenge:p.challenge_id,credentials},10000).await?))
         }
         "rd_recording_get" => {
             let p:Read=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
@@ -977,6 +1000,9 @@ pub(super) async fn dispatch(
             let p: WaitWrite = parse(args)?;
             let ms = wait(p.wait_ms, 10000)?;
             let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
+            if session.snapshot().kind==SessionKind::TcpTunnel && session.snapshot().state==ConnectionState::Ready {
+                crate::automation::tunnels::command(permit.clone(),crate::automation::tunnels::Command::CloseAll,10000).await?;
+            }
             gui::close(permit.clone())?;
             let done = api::wait_until(&session, &permit, ms, |s| s.state == ConnectionState::Closed && s.ui_session_ids.is_empty()).await?;
             Ok(Reply::success(json!({"session_id":session.snapshot().session_id,"closed":done,"remaining_views":session.snapshot().ui_session_ids.len(),"session":api::view(&session,false)})).status(if done { "completed" } else { "pending" }))
@@ -1143,6 +1169,10 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         }};
     }
     match name {
+        "rd_tunnel_list" => shape!(Read),
+        "rd_tunnel_add" => shape!(TunnelAdd),
+        "rd_tunnel_remove" => shape!(TunnelRemove),
+        "rd_tunnel_authenticate" => shape!(TunnelAuth),
         "rd_recording_get" => shape!(Read),
         "rd_recording_set" => shape!(RecordingSet),
         "rd_chat_send" => shape!(ChatSend),
@@ -1209,7 +1239,7 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
     if let Some(reference) = args.get("session_ref").and_then(Value::as_str) {
         let read = matches!(
             name,
-            "rd_session_get"
+            "rd_tunnel_list" | "rd_session_get"
                 | "rd_security_get"
                 | "rd_displays_get"
                 | "rd_display_modes_get"
@@ -1240,6 +1270,9 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
+        "rd_tunnel_list" => &[("tunnels","array"),("scope","string"),("manager_running","boolean"),("configured_gui_forwards","array"),("gui_forward_observation","string"),("semantics","string"),("credentials","string")],
+        "rd_tunnel_add" | "rd_tunnel_remove" => &[("tunnel","object"),("confirmed","boolean"),("confirmation","string"),("remote_connected","boolean")],
+        "rd_tunnel_authenticate" => &[("delivery","string"),("confirmed","boolean")],
         "rd_recording_get" => &[("state","object"),("scope","string"),("storage","string"),("connected","boolean"),("permission","boolean|null"),("output_directory","string"),("limits","string"),("lifecycle","string")],
         "rd_recording_set" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("requested_enabled","boolean"),("state","object")],
         "rd_chat_send" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("hint","string")],

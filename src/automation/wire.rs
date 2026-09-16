@@ -53,6 +53,11 @@ pub fn wrap_gui<T: InvokeUiSession>(core: &Session<T>, data: Data) -> Option<Dat
     let Some(session) = sessions::for_core(core) else {
         return Some(data);
     };
+    if session.snapshot().kind==sessions::SessionKind::TcpTunnel && matches!(&data,Data::Login(..)) {
+        // GUI-managed forwards keep their existing login route; never feed it to MCP listeners.
+        if session.control().installed() && !session.control().human_permit().is_some_and(|p|p.check().is_ok()) {return None;}
+        return Some(data);
+    }
     if let Data::Message(message) = &data {
         super::subscriptions::observe_gui(core, message);
     }
@@ -236,6 +241,7 @@ impl WireState {
                 ));
             }
             if !envelope.permit.human && !envelope.release {
+                if matches!(envelope.message.union,Some(message::Union::TerminalAction(_))) {super::terminals::check_peer(&snapshot)?;}
                 if !snapshot.authenticated || snapshot.state != sessions::ConnectionState::Ready {
                     return Err(BridgeError::new(
                         "NOT_READY",

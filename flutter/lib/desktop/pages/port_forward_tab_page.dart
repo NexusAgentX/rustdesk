@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter_hbb/models/platform_model.dart';
 
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:flutter/material.dart';
@@ -49,6 +50,7 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
           isRDP: isRDP,
           forceRelay: params['forceRelay'],
           connToken: params['connToken'],
+          automationRequestId: params['automationRequestId'],
         )));
   }
 
@@ -60,6 +62,14 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
       debugPrint(
           "[Port Forward] call ${call.method} with args ${call.arguments} from window $fromWindowId");
       // for simplify, just replace connectionId
+      if (call.method == 'automation_close') {
+        final args = jsonDecode(call.arguments);
+        for (final tab in List<TabInfo>.from(tabController.state.value.tabs)) {
+          final page = tab.page as PortForwardPage;
+          if (bind.automationCanClose(requestId: args['request_id'], sessionId: page.ffi.sessionId)) tabController.closeBy(tab.key);
+        }
+        return true;
+      }
       if (call.method == kWindowEventNewPortForward) {
         final args = jsonDecode(call.arguments);
         final id = args['id'];
@@ -68,7 +78,7 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
         if (tabController.state.value.tabs.indexWhere((e) => e.key == id) >=
             0) {
           debugPrint("port forward $id exists");
-          return;
+          return true;
         }
         tabController.add(TabInfo(
             key: id,
@@ -84,6 +94,7 @@ class _PortForwardTabPageState extends State<PortForwardTabPage> {
               tabController: tabController,
               forceRelay: args['forceRelay'],
               connToken: args['connToken'],
+              automationRequestId: args['automationRequestId'],
             )));
       } else if (call.method == "onDestroy") {
         tabController.clear();

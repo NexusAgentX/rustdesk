@@ -48,7 +48,7 @@ pub fn automation_open_failed(request_id: String) {
 pub fn automation_control_state(session_id: SessionID) -> SyncReturn<String> {
     #[cfg(all(feature = "automation", target_os = "macos"))]
     if let Some(session) = crate::automation::sessions::for_view(&session_id) {
-        return SyncReturn(serde_json::json!({"session_id":session.snapshot().session_id,"control":session.control().view()}).to_string());
+        return SyncReturn(serde_json::json!({"session_id":session.snapshot().session_id,"control":session.control().view(),"tunnels":crate::automation::tunnels::gui_state(&session)}).to_string());
     }
     SyncReturn("{}".to_owned())
 }

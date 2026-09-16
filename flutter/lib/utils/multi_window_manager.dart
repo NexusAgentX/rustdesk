@@ -339,6 +339,7 @@ class RustDeskMultiWindowManager {
     bool? isSharedPassword,
     bool? forceRelay,
     String? connToken,
+    String? automationRequestId,
   }) async {
     return await newSession(
       WindowType.PortForward,
@@ -350,6 +351,7 @@ class RustDeskMultiWindowManager {
       isRDP: isRDP,
       isSharedPassword: isSharedPassword,
       connToken: connToken,
+      automationRequestId: automationRequestId,
     );
   }
 
@@ -397,7 +399,7 @@ class RustDeskMultiWindowManager {
   }
 
   Future<void> closeAutomationSession(String kind, String requestId, String peerId) async {
-    final windows = List<int>.from(kind == 'terminal' ? _terminalWindows : kind == 'file_transfer' ? _fileTransferWindows : _remoteDesktopWindows);
+    final windows = List<int>.from(kind == 'terminal' ? _terminalWindows : kind == 'file_transfer' ? _fileTransferWindows : kind == 'tcp_tunnel' ? _portForwardWindows : _remoteDesktopWindows);
     for (final windowId in windows) {
       try {
         await DesktopMultiWindow.invokeMethod(windowId, 'automation_close', jsonEncode({'request_id': requestId, 'peer_id': peerId}));

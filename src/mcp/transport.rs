@@ -46,7 +46,7 @@ impl ServerHandler for Handler {
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::V_2025_11_25;
-        info.server_info = Implementation::new("RustDesk MCP", "0.1.8");
+        info.server_info = Implementation::new("RustDesk MCP", "0.1.9");
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info.instructions = Some("Operate visible RustDesk GUI sessions. Open or attach to obtain a session_ref; human control permits reads only. Request control explicitly and wait for approval. Refresh session_ref after handover or reconnect. Images use native PNG content blocks. Use operation_id before writes when retry safety matters; sent is transport evidence, not remote application acknowledgement. Keep the GET event stream open and answer server pings. Terminal I/O is raw interactive shell I/O, not command execution with individual exit codes.".into());
         info
@@ -473,7 +473,7 @@ mod tests {
         .await;
         let result = decode(&response.text().await.unwrap());
         let tools = result["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 63);
+        assert_eq!(tools.len(), 67);
         for tool in tools {
             assert!(tool["inputSchema"].is_object());
             assert!(tool["outputSchema"].is_object());

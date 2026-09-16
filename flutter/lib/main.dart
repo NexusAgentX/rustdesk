@@ -568,6 +568,8 @@ _registerEventHandler() {
       try {
         if (evt['kind'] == 'file_transfer') {
           await rustDeskWinManager.newFileTransfer(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId);
+        } else if (evt['kind'] == 'tcp_tunnel') {
+          await rustDeskWinManager.newPortForward(evt['peer_id'], false, forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId);
         } else if (evt['kind'] == 'terminal') {
           await rustDeskWinManager.newTerminal(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId == '' ? null : requestId, terminalId: int.tryParse(evt['terminal_id'] ?? ''));
         } else {

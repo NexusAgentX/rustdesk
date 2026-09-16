@@ -19,11 +19,12 @@ pub enum SessionKind {
     Desktop,
     Terminal,
     FileTransfer,
+    TcpTunnel,
 }
 
 impl SessionKind {
     pub fn name(self) -> &'static str {
-        match self { Self::Desktop => "desktop", Self::Terminal => "terminal", Self::FileTransfer => "file_transfer" }
+        match self { Self::Desktop => "desktop", Self::Terminal => "terminal", Self::FileTransfer => "file_transfer", Self::TcpTunnel => "tcp_tunnel" }
     }
 }
 
@@ -96,6 +97,7 @@ struct State {
 
 struct Record {
     recording: super::recording::Shared,
+    tunnels: super::tunnels::Shared,
     control: Arc<super::control::Authority>,
     state: Mutex<State>,
     changes: watch::Sender<u64>,
@@ -114,6 +116,7 @@ impl SessionHandle {
         let (frames_changed, _) = watch::channel(0);
         Self(Arc::new(Record {
             recording: Default::default(),
+            tunnels: Default::default(),
             control: Arc::new(super::control::Authority::new(session_id.clone())),
             state: Mutex::new(State {
                 chat: Default::default(),
@@ -160,6 +163,8 @@ impl SessionHandle {
         drop(state);
         super::wire::wake(&id);
     }
+
+    pub fn tunnels(&self) -> super::tunnels::Shared { self.0.tunnels.clone() }
 
     pub fn snapshot(&self) -> SessionSnapshot {
         self.0.state.lock().unwrap().snapshot.clone()
@@ -394,6 +399,10 @@ impl Connection {
         self.session.notify(&mut state);
     }
 
+    pub(crate) fn tunnel_manager_ready(&self) {
+        self.update(|state| { state.snapshot.state=ConnectionState::Ready; state.snapshot.authenticated=false; });
+    }
+
     pub(crate) fn connection_error(&self, error: &str) {
         self.update(|state| {
             state.snapshot.last_error = Some(error.chars().take(1024).collect());
@@ -485,7 +494,7 @@ impl Connection {
                 }
                 SessionKind::Terminal => ConnectionState::AwaitingHuman,
                 SessionKind::Desktop => ConnectionState::AwaitingFrame,
-                SessionKind::FileTransfer => ConnectionState::Ready,
+                SessionKind::FileTransfer | SessionKind::TcpTunnel => ConnectionState::Ready,
             };
             self.session.invalidate_frames(state);
         });
@@ -724,6 +733,7 @@ fn session<T: InvokeUiSession>(core: &Session<T>) -> Option<SessionHandle> {
         ConnType::DEFAULT_CONN => SessionKind::Desktop,
         ConnType::TERMINAL => SessionKind::Terminal,
         ConnType::FILE_TRANSFER => SessionKind::FileTransfer,
+        ConnType::PORT_FORWARD => SessionKind::TcpTunnel,
         _ => return None,
     };
     let key = Arc::as_ptr(&core.connection_round_state) as usize;

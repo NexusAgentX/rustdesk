@@ -29,3 +29,5 @@ pub mod security;
 
 pub mod chat;
 pub mod recording;
+
+pub mod tunnels;

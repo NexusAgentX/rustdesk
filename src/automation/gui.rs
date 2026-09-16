@@ -194,7 +194,7 @@ pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
         &peer,
         kind == SessionKind::FileTransfer,
         false,
-        false,
+        kind == SessionKind::TcpTunnel,
         false,
         kind == SessionKind::Terminal,
         "",

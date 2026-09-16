@@ -28,6 +28,7 @@ class AutomationSessionView extends StatefulWidget {
 class _AutomationSessionViewState extends State<AutomationSessionView> {
   Timer? _timer;
   Map<String, dynamic> _control = {};
+  List<dynamic> _tunnels = [];
   String _last = '';
   String? _error;
   bool _readingWindow = false;
@@ -92,6 +93,7 @@ class _AutomationSessionViewState extends State<AutomationSessionView> {
     setState(() {
       _last = raw;
       _control = Map<String, dynamic>.from(value['control'] ?? {});
+      _tunnels = List<dynamic>.from(value['tunnels'] ?? []);
     });
     if (wasReadonly &&
         _control['mode'] == 'human' &&
@@ -166,6 +168,18 @@ class _AutomationSessionViewState extends State<AutomationSessionView> {
                       child: Text(translate('Decline'))),
                 ],
               ]),
+              if (_tunnels.isNotEmpty)
+                ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 160),
+                    child: SingleChildScrollView(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              ..._tunnels.where((t) => t['state'] != 'closed' && t['state'] != 'failed'),
+                              ..._tunnels.reversed.where((t) => t['state'] == 'closed' || t['state'] == 'failed'),
+                            ].take(16).map((t) => Text(
+                                "127.0.0.1:${t['local_port']} → ${t['remote_host']}:${t['remote_port']} · ${t['state']} · ${t['active_connections']} connections${t['last_error'] == null ? '' : ' · ${t['last_error']}'}",
+                                maxLines: 2, overflow: TextOverflow.ellipsis)).toList()))),
               if (awaiting && (approval['reason'] as String).isNotEmpty)
                 Text(approval['reason']),
               if (_error != null || _control['release_error'] != null)

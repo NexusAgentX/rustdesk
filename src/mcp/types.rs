@@ -22,6 +22,7 @@ pub enum Kind {
     Desktop,
     Terminal,
     FileTransfer,
+    TcpTunnel,
 }
 params!(Open { operation_id: Option<String>, peer_id: String, password: Option<String>, from_session_ref: Option<String>, kind: Option<Kind>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(Attach { session_id: String, operation_id: Option<String> });
@@ -199,3 +200,7 @@ params!(ChatSend { session_ref:String, text:String, operation_id:Option<String> 
 params!(ChatRead { session_ref:String, cursor:Option<String>, max_messages:Option<usize>, wait_ms:Option<u64> });
 
 params!(RecordingSet { session_ref:String, enabled:bool, wait_ms:Option<u64>, operation_id:Option<String> });
+
+params!(TunnelAdd { session_ref: String, operation_id: Option<String>, local_port: u16, remote_host: String, remote_port: u16, password: Option<String> });
+params!(TunnelRemove { session_ref: String, operation_id: Option<String>, tunnel_id: String, wait_ms: Option<u64> });
+params!(TunnelAuth { session_ref: String, operation_id: Option<String>, tunnel_id: String, challenge_id: String, credentials: Credentials });

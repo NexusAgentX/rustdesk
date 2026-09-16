@@ -1974,13 +1974,37 @@ pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>, round: u32) {
             log::info!("Remote rdp port: {}", port);
             start_one_port_forward(handler, 0, "".to_owned(), port, receiver, &key, &token).await;
         } else if handler.args.len() == 0 {
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            let observer=crate::automation::sessions::begin(&handler,round);
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            let mut tunnels=crate::automation::sessions::for_core(&handler).map(crate::automation::tunnels::Manager::new);
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            if let Some(observer)=&observer { observer.tunnel_manager_ready(); }
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            handler.connection_round_state.lock().unwrap().set_connected();
             let pfs = handler.lc.read().unwrap().port_forwards.clone();
             let mut queues = HashMap::<i32, mpsc::UnboundedSender<Data>>::new();
             for d in pfs {
                 sender.send(Data::AddPortForward(d)).ok();
             }
             loop {
-                match receiver.recv().await {
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(tunnels)=&mut tunnels { tunnels.poll().await; }
+                #[cfg(not(all(feature = "automation", target_os = "macos")))]
+                let next=receiver.recv().await;
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                let next=tokio::select! { value=receiver.recv()=>value, _=tokio::time::sleep(std::time::Duration::from_millis(100))=>continue };
+                match next {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    Some(Data::AutomationTunnel(request))=>{
+                        if let Some(tunnels)=&mut tunnels {tunnels.handle(&handler,&key,&token,request).await;}
+                    }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    Some(Data::AutomationWake)=>{}
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    Some(Data::AutomationDisconnect(permit))=>{if permit.check().is_ok(){break;}}
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    Some(Data::AutomationLogin(request))=>request.complete(Err(crate::automation::error::BridgeError::new("WRONG_SESSION_KIND","Use rd_tunnel_authenticate with a tunnel ID"))),
                     Some(Data::AddPortForward((port, remote_host, remote_port))) => {
                         if port <= 0 || remote_port <= 0 {
                             continue;
@@ -2016,9 +2040,14 @@ pub async fn io_loop<T: InvokeUiSession>(handler: Session<T>, round: u32) {
                             s.send(d.clone()).ok();
                         }
                     }
-                    _ => {}
+                    None => break,
                 }
             }
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            { if let Some(tunnels)=&mut tunnels {tunnels.close().await;} if let Some(observer)=&observer {observer.disconnected();} }
+            for (_,queue) in queues {let _closed=queue.send(Data::Close);}
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            handler.connection_round_state.lock().unwrap().set_disconnected(round);
         } else {
             let port = handler.args[0].parse::<i32>().unwrap_or(0);
             if handler.args.len() != 3

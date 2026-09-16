@@ -87,6 +87,7 @@ pub fn view(session: &SessionHandle, full: bool) -> Value {
         result["human_action"] = json!({"kind":"remote_confirmation","message":s.last_error});
     }
     result["connection"] = json!({"state":state_name(s.state),"epoch":s.connection_epoch.to_string(),"authenticated":s.authenticated,"error":s.last_error});
+    if s.kind==SessionKind::TcpTunnel { result["connection"]["scope"]=json!("local_manager"); result["connection"]["remote_authentication"]=json!("per_tunnel"); }
     if full {
         result["control"]["release_error"] = json!(control.release_error);
         result["control"]["released_inputs"] = json!(control.released_inputs);

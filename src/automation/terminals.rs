@@ -608,11 +608,18 @@ pub async fn wait_open(permit: &Permit, terminal: &str, wait_ms: u64) -> Result<
         }
     }
 }
+pub(crate) fn check_peer(snapshot: &sessions::SessionSnapshot) -> Result<()> {
+    if snapshot.kind!=sessions::SessionKind::Terminal {return Err(BridgeError::new("WRONG_SESSION_KIND","A terminal connection is required"));}
+    if snapshot.terminal_supported==Some(false) {return Err(BridgeError::new("UNSUPPORTED","Peer reports no terminal support"));}
+    if snapshot.terminal_supported!=Some(true) || !snapshot.authenticated || snapshot.state!=sessions::ConnectionState::Ready {return Err(BridgeError::new("NOT_READY","Terminal support and authentication must be negotiated first"));}
+    Ok(())
+}
 pub fn create(permit: Permit, rows: u32, cols: u32) -> Result<TerminalState> {
     permit.check()?;
     let session = sessions::get(&permit.authority.session_id)
         .ok_or_else(|| BridgeError::new("SESSION_CLOSED", "Session is closed"))?;
     super::api::terminal_session(&session)?;
+    check_peer(&session.snapshot())?;
     let (state, official) = prepare(permit, rows, cols)?;
     let event=serde_json::json!({"name":"automation_open","request_id":"","peer_id":session.snapshot().peer_id,"kind":"terminal","terminal_id":official.to_string(),"force_relay":"false"}).to_string();
     if crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event) != Some(true) {
@@ -653,6 +660,18 @@ mod tests {
             ..Default::default()
         });
         super::response(session, 1, Some("binding".into()), &response);
+    }
+    #[test]
+    fn terminal_peer_support_must_be_negotiated_before_creating_tabs() {
+        let session=sessions::SessionHandle::new("terminal-test".into(),sessions::SessionKind::Terminal,Default::default());
+        let mut snapshot=session.snapshot();
+        assert_eq!(check_peer(&snapshot).unwrap_err().code,"NOT_READY");
+        snapshot.terminal_supported=Some(false);
+        assert_eq!(check_peer(&snapshot).unwrap_err().code,"UNSUPPORTED");
+        snapshot.terminal_supported=Some(true);snapshot.authenticated=true;snapshot.state=sessions::ConnectionState::Ready;
+        assert!(check_peer(&snapshot).is_ok());
+        snapshot.state=sessions::ConnectionState::Disconnected;
+        assert_eq!(check_peer(&snapshot).unwrap_err().code,"NOT_READY");
     }
     #[test]
     fn raw_output_is_repeatable_and_preserves_invalid_utf8() {
