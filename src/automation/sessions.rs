@@ -62,6 +62,7 @@ pub struct SessionSnapshot {
     pub authenticated: bool,
     pub auth_challenge: Option<AuthChallenge>,
     pub platform: Option<String>,
+    pub peer_version: Option<String>,
     pub terminal_supported: Option<bool>,
     /// Missing entries are unknown, never permission grants.
     pub permissions: BTreeMap<String, bool>,
@@ -111,6 +112,7 @@ impl SessionHandle {
                     authenticated: false,
                     auth_challenge: None,
                     platform: None,
+                    peer_version: None,
                     terminal_supported: None,
                     permissions: BTreeMap::new(),
                     displays: vec![],
@@ -247,6 +249,7 @@ impl SessionHandle {
         state.snapshot.authenticated = false;
         state.snapshot.auth_challenge = None;
         state.snapshot.platform = None;
+        state.snapshot.peer_version = None;
         state.snapshot.terminal_supported = None;
         state.snapshot.permissions.clear();
         state.snapshot.displays.clear();
@@ -367,6 +370,7 @@ impl Connection {
             state.snapshot.authenticated = true;
             state.snapshot.auth_challenge = None;
             state.snapshot.platform = Some(peer.platform.clone());
+            state.snapshot.peer_version = Some(peer.version.clone());
             // Desktop peers send initial permission messages only for denials, before PeerInfo.
             if matches!(peer.platform.as_str(), "Windows" | "Mac OS" | "Linux") {
                 state
@@ -811,11 +815,14 @@ mod tests {
     fn desktop_authentication_applies_protocol_permission_defaults_but_keeps_denials() {
         let (session, mut peer, _) = fixture();
         peer.platform = "Windows".into();
+        peer.version = "1.4.9".into();
         let connection = session.begin(0).unwrap();
         assert!(session.snapshot().permissions.get("keyboard").is_none());
         connection.authenticated(&peer);
         assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&true));
+        assert_eq!(session.snapshot().peer_version.as_deref(), Some("1.4.9"));
         let next = session.begin(1).unwrap();
+        assert!(session.snapshot().peer_version.is_none());
         next.permission(&PermissionInfo {
             permission: hbb_common::message_proto::permission_info::Permission::Keyboard.into(),
             enabled: false,

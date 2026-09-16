@@ -64,6 +64,8 @@ fn definition<T: JsonSchema + 'static>(
 }
 pub fn definitions() -> Vec<Tool> {
     vec![
+    definition::<Read>("rd_capabilities_get","Inspect implemented MCP capabilities for this session, including peer version, permission, control and readiness blockers. Unknown support is not permission. Does not take control.",true),
+    definition::<OperationGet>("rd_operation_get","Query this MCP client's retained operation_id without replaying a write. Optional wait_ms waits for local execution, not remote application completion. Original pending results have unknown final outcome; inspect current session or terminal state. Records expire five minutes after execution and when this MCP client ends.",true),
     definition::<List>("rd_session_list","Discover visible desktop and terminal sessions. Multiple MCP agents may connect; ownership is exclusive per core session.",true),
     definition::<Open>("rd_session_open","Open a visible GUI session or reuse and attach to an existing one. Only newly created sessions start under AI control. Optional password is single-use connection authentication, never OS login.",false),
     definition::<Attach>("rd_session_attach","Attach to an existing core session without changing its control mode. Returns session_ref; fails if another agent owns it.",false),
@@ -138,6 +140,17 @@ pub(super) async fn dispatch(
 ) -> Result<Reply> {
     let agent = &client.agent;
     match name {
+        "rd_capabilities_get" => {
+            let p: Read = parse(args)?;
+            let (session, permit) = api::resolve(agent, &p.session_ref, false)?;
+            permit.read_check()?;
+            Ok(Reply::success(super::capabilities::view(&session)))
+        }
+        "rd_operation_get" => {
+            let p: OperationGet = parse(args)?;
+            let ms = wait(p.wait_ms, 0)?;
+            Ok(Reply::success(json!({"operation":super::operations::wait_query(client, &p.operation_id, ms).await?})))
+        }
         "rd_session_list" => {
             let p: List = parse(args)?;
             let limit = p.limit.unwrap_or(50);
@@ -727,6 +740,8 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_session_attach" => shape!(Attach),
         "rd_session_get" => shape!(Get),
         "rd_session_list" => shape!(List),
+        "rd_capabilities_get" => shape!(Read),
+        "rd_operation_get" => shape!(OperationGet),
         "rd_session_detach" | "rd_control_release" => shape!(Write),
         "rd_session_disconnect" | "rd_session_close" => shape!(WaitWrite),
         "rd_session_authenticate" => shape!(Authenticate),
@@ -750,6 +765,7 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         let read = matches!(
             name,
             "rd_session_get"
+                | "rd_capabilities_get"
                 | "rd_screen_capture"
                 | "rd_terminal_list"
                 | "rd_terminal_read"
@@ -770,6 +786,8 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
+        "rd_capabilities_get" => &[("session_ref", "string"), ("peer", "object"), ("capabilities", "object"), ("contract", "object")],
+        "rd_operation_get" => &[("operation", "object")],
         "rd_session_list" => &[("sessions", "array"), ("next_cursor", "string|null")],
         "rd_session_open" => &[
             ("created", "boolean"),

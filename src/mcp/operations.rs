@@ -27,6 +27,7 @@ struct Completed {
 }
 struct Record {
     digest: [u8; 32],
+    tool: String,
     target: Mutex<Option<Permit>>,
     result: Mutex<Option<Completed>>,
     changed: watch::Sender<bool>,
@@ -176,7 +177,35 @@ fn snapshot(record: &Record, id: &str, key: &str, replayed: bool) -> Result<Repl
     if reply.value["operation"].is_null() {
         reply.value["operation"] = json!({"id":id,"replayed":replayed});
     }
+    let (execution, outcome) = execution_state(completed.as_ref().map(|r| &r.reply.value));
+    reply.value["operation"]["tool"] = json!(record.tool);
+    reply.value["operation"]["execution_state"] = json!(execution);
+    reply.value["operation"]["outcome"] = json!(outcome);
     Ok(reply)
+}
+
+// A completed local call may only have sent a request. Preserve its evidence instead
+// of promoting an observation timeout into remote success or replaying the write.
+fn execution_state(result: Option<&Value>) -> (&'static str, &'static str) {
+    match result {
+        None => ("running", "pending"),
+        Some(v) if v["error"]["code"] == "CANCELLED" => ("cancelled", "unknown"),
+        Some(v) if v["status"] == "partial" => ("finished", "partial"),
+        Some(v) if v["ok"] == false => ("failed", "unknown"),
+        Some(v) if v["status"] == "pending" => ("finished", "unknown"),
+        Some(_) => ("finished", "reported"),
+    }
+}
+
+pub async fn wait_query(client: &Client, id: &str, ms: u64) -> Result<Value> {
+    api::wait_budget(ms)?;
+    let record = client.operations.records.lock().unwrap().get(id).cloned()
+        .ok_or_else(|| BridgeError::new("OPERATION_EXPIRED", "Operation is absent or expired"))?;
+    let mut changed = record.changed.subscribe();
+    if ms > 0 && record.result.lock().unwrap().is_none() {
+        let _ = tokio::time::timeout(Duration::from_millis(ms), changed.changed()).await;
+    }
+    query(client, id)
 }
 pub async fn execute(
     client: Arc<Client>,
@@ -187,7 +216,7 @@ pub async fn execute(
     let Some(id) = args
         .get("operation_id")
         .and_then(Value::as_str)
-        .filter(|_| name != "rd_session_get")
+        .filter(|_| !matches!(name, "rd_session_get" | "rd_operation_get"))
     else {
         return run(&client, name, &args, cancel).await;
     };
@@ -246,6 +275,7 @@ pub async fn execute(
             let (changed, _) = watch::channel(false);
             let record = Arc::new(Record {
                 digest: hash,
+                tool: name.to_owned(),
                 target: Mutex::new(if name == "rd_session_detach" {
                     None
                 } else {
@@ -337,6 +367,45 @@ mod tests {
     use crate::{automation::sessions, flutter::FlutterHandler, ui_session_interface::Session};
     use uuid::Uuid;
 
+    #[test]
+    fn local_execution_does_not_claim_remote_completion() {
+        assert_eq!(execution_state(None), ("running", "pending"));
+        assert_eq!(execution_state(Some(&json!({"ok":true,"status":"pending"}))), ("finished", "unknown"));
+        assert_eq!(execution_state(Some(&json!({"ok":true,"status":"completed"}))), ("finished", "reported"));
+        assert_eq!(execution_state(Some(&json!({"ok":false,"status":"partial"}))), ("finished", "partial"));
+        assert_eq!(execution_state(Some(&json!({"ok":false,"error":{"code":"CANCELLED"}}))), ("cancelled", "unknown"));
+        assert_eq!(execution_state(Some(&json!({"ok":false,"error":{"code":"DISCONNECTED"}}))), ("failed", "unknown"));
+    }
+
+    #[tokio::test]
+    async fn operation_wait_timeout_completion_and_expiry() {
+        let client = Client::new();
+        let (changed, _) = watch::channel(false);
+        let record = Arc::new(Record {
+            digest: [0; 32], tool: "rd_session_open".into(), target: Mutex::new(None),
+            result: Mutex::new(None), changed,
+        });
+        client.operations.records.lock().unwrap().insert("job".into(), record.clone());
+        let pending = wait_query(&client, "job", 1).await.unwrap();
+        assert_eq!(pending["operation"]["execution_state"], "running");
+        let worker = record.clone();
+        let finish = async move {
+            tokio::task::yield_now().await;
+            *worker.result.lock().unwrap() = Some(Completed {
+                at: Instant::now(), expires: chrono::Utc::now() + chrono::Duration::minutes(5),
+                reply: Reply::success(json!({})).status("pending"),
+            });
+            worker.changed.send_replace(true);
+        };
+        let (result, ()) = tokio::join!(wait_query(&client, "job", 1000), finish);
+        let result = result.unwrap();
+        assert_eq!(result["operation"]["execution_state"], "finished");
+        assert_eq!(result["operation"]["outcome"], "unknown");
+        record.result.lock().unwrap().as_mut().unwrap().at = Instant::now() - Duration::from_secs(301);
+        assert_eq!(query(&client, "job").unwrap_err().code, "OPERATION_EXPIRED");
+        client.finish();
+    }
+
     #[tokio::test]
     async fn concurrent_retries_share_one_record_and_replay_original_reference() {
         let core = Session::<FlutterHandler>::default();
@@ -365,7 +434,13 @@ mod tests {
         );
         assert!(first.is_ok() && second.is_ok());
         assert_eq!(client.operations.records.lock().unwrap().len(), 1);
-        let original = query(&client, "attach-once").unwrap();
+        let original = wait_query(&client, "attach-once", 0).await.unwrap();
+        assert_eq!(original["operation"]["tool"], "rd_session_attach");
+        assert_eq!(original["operation"]["execution_state"], "finished");
+        let other = Client::new();
+        assert_eq!(wait_query(&other, "attach-once", 0).await.unwrap_err().code, "OPERATION_EXPIRED");
+        assert_eq!(wait_query(&client, "attach-once", 30001).await.unwrap_err().code, "INVALID_ARGUMENT");
+        other.finish();
         let old = original["data"]["session"]["session_ref"].clone();
         session.control().release(None, false).unwrap();
         assert_ne!(json!(session.control().view().session_ref), old);

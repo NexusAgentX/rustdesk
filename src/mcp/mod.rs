@@ -1,3 +1,4 @@
+mod capabilities;
 mod credentials;
 mod operations;
 mod tools;

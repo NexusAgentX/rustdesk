@@ -29,6 +29,7 @@ params!(WaitWrite { session_ref: String, operation_id: Option<String>, wait_ms: 
 params!(Read {
     session_ref: String
 });
+params!(OperationGet { operation_id: String, wait_ms: Option<u64> });
 params!(Get { session_ref: String, detail: Option<Detail>, after_revision: Option<String>, wait_ms: Option<u64>, operation_id: Option<String> });
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
