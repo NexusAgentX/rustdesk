@@ -350,6 +350,7 @@ class FfiModel with ChangeNotifier {
       } else if (name == 'sync_platform_additions') {
         handlePlatformAdditions(evt, sessionId, peerId);
       } else if (name == 'connection_ready') {
+        parent.target?.qualityMonitorModel.resetObservations();
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
@@ -3582,6 +3583,19 @@ class QualityMonitorModel with ChangeNotifier {
 
   bool get show => _show;
   QualityMonitorData get data => _data;
+  final Map<String, DateTime> observedAt = {};
+
+  void resetObservations() {
+    _data.speed = null;
+    _data.fps = null;
+    _data.delay = null;
+    _data.targetBitrate = null;
+    _data.codecFormat = null;
+    _data.chroma = null;
+    observedAt.clear();
+    notifyListeners();
+  }
+
 
   checkShowQualityMonitor(SessionID sessionId) async {
     final show = await bind.sessionGetToggleOption(
@@ -3597,6 +3611,7 @@ class QualityMonitorModel with ChangeNotifier {
     try {
       if (evt.containsKey('speed') && (evt['speed'] as String).isNotEmpty) {
         _data.speed = evt['speed'];
+        observedAt["speed"] = DateTime.now();
       }
       if (evt.containsKey('fps') && (evt['fps'] as String).isNotEmpty) {
         final fps = jsonDecode(evt['fps']) as Map<String, dynamic>;
@@ -3607,6 +3622,7 @@ class QualityMonitorModel with ChangeNotifier {
             final fps2 = fps[currentDisplay.toString()];
             if (fps2 != null) {
               _data.fps = fps2.toString();
+              observedAt["fps"] = DateTime.now();
             }
           } else if (fps.isNotEmpty) {
             final fpsList = [];
@@ -3614,6 +3630,7 @@ class QualityMonitorModel with ChangeNotifier {
               fpsList.add((fps[i.toString()] ?? 0).toString());
             }
             _data.fps = fpsList.join(' ');
+            observedAt["fps"] = DateTime.now();
           }
         } else {
           _data.fps = null;
@@ -3621,17 +3638,21 @@ class QualityMonitorModel with ChangeNotifier {
       }
       if (evt.containsKey('delay') && (evt['delay'] as String).isNotEmpty) {
         _data.delay = evt['delay'];
+        observedAt["delay"] = DateTime.now();
       }
       if (evt.containsKey('target_bitrate') &&
           (evt['target_bitrate'] as String).isNotEmpty) {
         _data.targetBitrate = evt['target_bitrate'];
+        observedAt["targetBitrate"] = DateTime.now();
       }
       if (evt.containsKey('codec_format') &&
           (evt['codec_format'] as String).isNotEmpty) {
         _data.codecFormat = evt['codec_format'];
+        observedAt["codecFormat"] = DateTime.now();
       }
       if (evt.containsKey('chroma') && (evt['chroma'] as String).isNotEmpty) {
         _data.chroma = evt['chroma'];
+        observedAt["chroma"] = DateTime.now();
       }
       notifyListeners();
     } catch (e) {

@@ -157,6 +157,128 @@ class AutomationView {
     }
   }
 
+  Future<Map<String, dynamic>> connectionState() async {
+    final model = ffi.ffiModel;
+    final pi = model.pi;
+    final monitor = ffi.qualityMonitorModel;
+    final now = DateTime.now();
+    Map<String, dynamic> metric(String field, String? value, String unit,
+        {bool stable = false}) {
+      if (value == '-' || value == '') value = null;
+      final at = monitor.observedAt[field];
+      final age = at == null ? null : now.difference(at).inMilliseconds;
+      return {'value': value, 'known': value != null && at != null,
+        'observed_at': at?.toUtc().toIso8601String(), 'age_ms': age,
+        'fresh': value != null && age != null && (stable || age <= 10000), 'unit': unit};
+    }
+    final publicServer = await bind.mainIsUsingPublicServer();
+    final relayLimited = publicServer && model.direct != true;
+    final alternative = jsonDecode(await bind.sessionAlternativeCodecs(sessionId: ffi.sessionId)) as Map<String, dynamic>;
+    final codecs = ['auto', 'vp9', ...['vp8', 'av1', 'h264', 'h265'].where((c) => alternative[c] == true)];
+    final custom = await bind.sessionGetCustomImageQuality(sessionId: ffi.sessionId);
+    final codec = monitor.data.codecFormat;
+    final trueColorSupported = versionCmp(pi.version, '1.2.4') >= 0 &&
+        (codec == 'AV1' || codec == 'VP9') && monitor.observedAt['codecFormat'] != null;
+    return {
+      'settings': {
+        'quality': await bind.sessionGetImageQuality(sessionId: ffi.sessionId),
+        'custom_quality': custom != null && custom.isNotEmpty ? custom.first : 50,
+        'custom_fps': int.tryParse(await bind.sessionGetOption(sessionId: ffi.sessionId, arg: 'custom-fps') ?? '') ?? 30,
+        'codec_preference': await bind.sessionGetOption(sessionId: ffi.sessionId, arg: kOptionCodecPreference),
+        'true_color': toggle('i444'),
+        'audio_muted': toggle('disable-audio'),
+        'quality_overlay': toggle('show-quality-monitor'),
+        'quality_overlay_visible': monitor.show,
+      },
+      'support': {
+        'available_codecs': codecs,
+        'codecs_known': pi.version.isNotEmpty && model.direct != null,
+        'quality_min': 10,
+        'quality_max': !relayLimited && versionCmp(pi.version, '1.2.2') >= 0 ? 2000 : 100,
+        'custom_fps': !relayLimited && versionCmp(pi.version, '1.2.0') >= 0,
+        'fps_min': 5, 'fps_max': 120,
+        'public_relay_restriction': relayLimited,
+        'true_color': trueColorSupported,
+        'true_color_reason': trueColorSupported ? null : 'requires_peer_1_2_4_and_observed_vp9_or_av1',
+        'audio_permission': pi.version.isEmpty ? null : model.permissions['audio'] != false,
+      },
+      'metrics': {
+        'speed': metric('speed', monitor.data.speed, 'stock_formatted_rate'),
+        'fps': metric('fps', monitor.data.fps, 'frames_per_second_current_view'),
+        'delay': metric('delay', monitor.data.delay, 'ms'),
+        'target_bitrate': metric('targetBitrate', monitor.data.targetBitrate, 'stock_kb'),
+        'codec': metric('codecFormat', codec, 'codec', stable: true),
+        'chroma': metric('chroma', monitor.data.chroma, 'chroma', stable: true),
+      },
+      'connection': {'secure': model.secure, 'direct': model.direct,
+        'transport': model.cachedPeerData.streamType, 'public_server': publicServer,
+        'peer_platform': pi.platform, 'peer_version': pi.version,
+        'permission_overrides': Map<String, bool>.from(model.permissions),
+        'view_only': model.viewOnly},
+      'scope': 'peer_preference',
+      'effect': 'Settings are persisted and sent immediately; actual codec, FPS and chroma are independent observations. Missing metrics are unknown; values older than 10 seconds are stale except negotiated codec/chroma, retained until reconnection.'
+    };
+  }
+
+  Future<String> setConnection(String request, Map<String, dynamic> change) async {
+    final before = await connectionState();
+    final support = before['support'] as Map<String, dynamic>;
+    final setting = change['setting'];
+    final enabled = change['enabled'] == true;
+    guard(request);
+    switch (setting) {
+      case 'quality':
+        if (change['preset'] == 'custom') {
+          if ((change['quality'] as int) > support['quality_max']) {
+            throw _ViewError('UNSUPPORTED', 'Quality exceeds the stock limit for this peer version or public relay');
+          }
+          if (change['fps'] != null && support['custom_fps'] != true) {
+            throw _ViewError('UNSUPPORTED', 'Custom FPS is disabled by the stock public-relay or peer-version restriction');
+          }
+          await bind.sessionSetCustomImageQuality(sessionId: ffi.sessionId, value: change['quality']);
+          if (change['fps'] != null) {
+            guard(request);
+            await bind.sessionSetCustomFps(sessionId: ffi.sessionId, fps: change['fps']);
+          }
+        } else {
+          await bind.sessionSetImageQuality(sessionId: ffi.sessionId, value: change['preset']);
+        }
+        return 'peer_preference';
+      case 'codec':
+        if (support['codecs_known'] != true) {
+          throw _ViewError('CODEC_UNKNOWN', 'Codec negotiation is not ready');
+        }
+        if (!(support['available_codecs'] as List).contains(change['preference'])) {
+          throw _ViewError('UNSUPPORTED', 'Codec is not supported by both decoder and peer encoder');
+        }
+        await bind.sessionPeerOption(sessionId: ffi.sessionId, name: kOptionCodecPreference, value: change['preference']);
+        guard(request);
+        await bind.sessionChangePreferCodec(sessionId: ffi.sessionId);
+        return 'peer_preference';
+      case 'true_color':
+        if (enabled && support['true_color'] != true) {
+          throw _ViewError('UNSUPPORTED', 'True color requires peer 1.2.4 and observed VP9/AV1');
+        }
+        await setToggle(request, 'i444', enabled);
+        guard(request);
+        await bind.sessionChangePreferCodec(sessionId: ffi.sessionId);
+        return 'peer_preference';
+      case 'audio_muted':
+        if (support['audio_permission'] != true) {
+          throw _ViewError('PERMISSION_DENIED', 'Remote audio permission is not granted');
+        }
+        await setToggle(request, 'disable-audio', enabled);
+        return 'peer_preference';
+      case 'quality_overlay':
+        await setToggle(request, 'show-quality-monitor', enabled);
+        guard(request);
+        await ffi.qualityMonitorModel.checkShowQualityMonitor(ffi.sessionId);
+        return 'peer_preference_current_view';
+      default:
+        throw _ViewError('INVALID_ARGUMENT', 'Unknown connection setting');
+    }
+  }
+
   Future<void> handle(String request) async {
     final raw = bind.automationViewClaim(requestId: request, sessionId: ffi.sessionId);
     if (raw.isEmpty) return;
@@ -171,6 +293,11 @@ class AutomationView {
       var delivery = 'observed';
       switch (command['command']) {
         case 'get': break;
+        case 'connection_get': break;
+        case 'connection_set':
+          scope = await setConnection(request, command['change']);
+          delivery = 'applied';
+          break;
         case 'set':
           scope = await set(request, command['change']);
           delivery = 'applied';
@@ -200,13 +327,15 @@ class AutomationView {
           }
           break;
       }
-      final observed = await state();
+      final connection = command['command'] == 'connection_get' || command['command'] == 'connection_set';
+      final observed = connection ? await connectionState() : await state();
       if (command['command'] == 'set' && command['change']['setting'] == 'fullscreen' &&
           observed['fullscreen'] != command['change']['enabled']) {
         confirmed = false;
         delivery = 'sent';
       }
-      result = {'confirmed': confirmed, 'delivery': delivery, 'scope': scope, 'state': observed};
+      result = {'confirmed': confirmed, 'delivery': delivery, 'scope': scope, 'state': observed,
+        if (connection && command['command'] == 'connection_set') 'remote_effect_confirmed': false};
       guard(request);
     } on _ViewError catch (e) {
       closeAfterReply = false;

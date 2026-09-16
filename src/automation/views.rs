@@ -64,18 +64,79 @@ pub enum WindowAction {
     Close,
     OpenDisplay { display_id: String },
 }
+#[derive(Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(tag = "setting", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ConnectionSetting {
+    Quality {
+        preset: QualityPreset,
+        quality: Option<u16>,
+        fps: Option<u16>,
+    },
+    Codec {
+        preference: CodecPreference,
+    },
+    TrueColor {
+        enabled: bool,
+    },
+    AudioMuted {
+        enabled: bool,
+    },
+    QualityOverlay {
+        enabled: bool,
+    },
+}
+#[derive(Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityPreset {
+    Best,
+    Balanced,
+    Low,
+    Custom,
+}
+#[derive(Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CodecPreference {
+    Auto,
+    Vp8,
+    Vp9,
+    Av1,
+    H264,
+    H265,
+}
+impl ConnectionSetting {
+    fn validate(&self) -> Result<()> {
+        if let Self::Quality {
+            preset,
+            quality,
+            fps,
+        } = self
+        {
+            match preset {
+                QualityPreset::Custom if quality.is_some_and(|q| (10..=2000).contains(&q)) && fps.is_none_or(|f| (5..=120).contains(&f)) => {},
+                QualityPreset::Best | QualityPreset::Balanced | QualityPreset::Low if quality.is_none() && fps.is_none() => {},
+                _ => return Err(BridgeError::invalid("Custom quality requires quality 10..2000 and optional fps 5..120; presets omit quality/fps")),
+            }
+        }
+        Ok(())
+    }
+}
 #[derive(Serialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
     Get,
+    ConnectionGet,
+    ConnectionSet { change: ConnectionSetting },
     Set { change: Setting },
     Window { action: WindowAction },
 }
 impl Command {
     fn write(&self) -> bool {
-        !matches!(self, Self::Get)
+        !matches!(self, Self::Get | Self::ConnectionGet)
     }
     fn validate(&self) -> Result<()> {
+        if let Self::ConnectionSet { change } = self {
+            return change.validate();
+        }
         if let Self::Set {
             change: Setting::Scale { mode, percent },
         } = self
@@ -178,6 +239,8 @@ pub fn complete(id: &str, view: Uuid, value: &str) -> bool {
                         "SETTING_CONFLICT" => "SETTING_CONFLICT",
                         "INVALID_ARGUMENT" => "INVALID_ARGUMENT",
                         "DISPLAY_NOT_FOUND" => "DISPLAY_NOT_FOUND",
+                        "PERMISSION_DENIED" => "PERMISSION_DENIED",
+                        "CODEC_UNKNOWN" => "CODEC_UNKNOWN",
                         _ => "GUI_ERROR",
                     };
                     Err(BridgeError::new(
@@ -285,6 +348,33 @@ pub async fn request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn quality_contract_rejects_ambiguous_presets_and_invalid_ranges() {
+        for (preset, quality, fps, valid) in [
+            (QualityPreset::Custom, Some(10), Some(5), true),
+            (QualityPreset::Custom, Some(2000), Some(120), true),
+            (QualityPreset::Custom, None, None, false),
+            (QualityPreset::Custom, Some(9), None, false),
+            (QualityPreset::Custom, Some(50), Some(121), false),
+            (QualityPreset::Balanced, Some(50), None, false),
+            (QualityPreset::Best, None, None, true),
+        ] {
+            assert_eq!(
+                ConnectionSetting::Quality {
+                    preset,
+                    quality,
+                    fps
+                }
+                .validate()
+                .is_ok(),
+                valid
+            );
+        }
+        assert!(serde_json::from_str::<ConnectionSetting>(
+            r#"{"setting":"codec","preference":"h266"}"#
+        )
+        .is_err());
+    }
     #[test]
     fn scale_validation_rejects_ambiguous_and_out_of_range_values() {
         for (mode, percent, ok) in [

@@ -173,3 +173,5 @@ params!(VirtualDisplaySet {session_ref:String,operation_id:Option<String>,action
 params!(ViewGet {session_ref:String,ui_session_id:Option<String>,wait_ms:Option<u64>});
 params!(ViewSet {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,change:crate::automation::views::Setting,wait_ms:Option<u64>});
 params!(ViewWindow {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,action:crate::automation::views::WindowAction,wait_ms:Option<u64>});
+
+params!(ConnectionSet {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,change:crate::automation::views::ConnectionSetting,wait_ms:Option<u64>});

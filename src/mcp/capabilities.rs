@@ -67,6 +67,8 @@ pub(super) fn view(session: &SessionHandle) -> Value {
         "capabilities":{
             "session_read":cap(Some(true),Some(true),false,false,&["rd_session_get","rd_capabilities_get"]),
             "session_lifecycle":cap(Some(true),Some(true),true,false,&["rd_session_disconnect","rd_session_reconnect","rd_session_close"]),
+            "connection_settings_read":cap(Some(desktop),Some(true),false,false,&["rd_connection_settings_get"]),
+            "connection_settings_write":cap(Some(desktop),Some(true),true,true,&["rd_connection_settings_set"]),
             "local_view_read":cap(Some(desktop),Some(true),false,false,&["rd_view_settings_get"]),
             "local_view_write":cap(Some(desktop),Some(true),true,true,&["rd_view_settings_set","rd_view_window"]),
             "display_read":cap(Some(desktop),Some(true),false,false,&["rd_displays_get","rd_display_modes_get"]),

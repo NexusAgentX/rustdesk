@@ -66,6 +66,8 @@ pub fn definitions() -> Vec<Tool> {
     vec![
     definition::<Read>("rd_displays_get","Read remote display topology, original dimensions, known modes, AI capture selection, local view selection and stock virtual-display support. Display IDs are valid only for the reported layout_revision; driver_installed is unknown because the stock protocol does not report it.",true),
     definition::<DisplayModes>("rd_display_modes_get","Read cached supported modes for one online display without changing it. If known=false, switch from another display to this display with target=local_view; the stock peer reports modes only when the selected display changes. Reconnect if no other display exists. Current geometry is in capture pixels; modes are the stock OS resolution values and scale is reported separately.",true),
+    definition::<ViewGet>("rd_connection_settings_get","Read quality/FPS preferences, available codecs, true color, audio and quality overlay settings, observed per-field metrics with age, and connection diagnostics from a desktop view. Unknown and stale metrics remain explicit; settings are not proof of actual codec/FPS. Multiple views require ui_session_id. No remote permission is granted by this query.",true),
+    definition::<ConnectionSet>("rd_connection_settings_set","Set quality (best/balanced/low/custom), codec preference, true_color, audio_muted or quality_overlay. Custom requires quality 10..2000; optional fps 5..120 is accepted only when the stock toolbar allows it. Public relay and old-peer limits apply. Codecs must be reported available; 4:4:4 requires fresh VP9/AV1 observation and peer >=1.2.4. Audio permission is required for mute changes. Preferences persist per peer; overlay also updates the target view. Reply confirms local setting application, not remote codec/quality/audio outcome. Query observed metrics separately; requires AI control.",false),
     definition::<ViewGet>("rd_view_settings_get","Read actual settings and local-window state from one desktop GUI view, including local screens, scaling, cursor preferences, toolbar pin and fullscreen. Multiple views require ui_session_id from displays_get. Does not change remote resolution or MCP image size.",true),
     definition::<ViewSet>("rd_view_settings_set","Set one explicit local-view setting under AI control. Scaling/cursor/display-window preferences persist per peer; use_all_local_displays applies on the next fresh connection; individual_windows changes subsequent toolbar selections without creating/closing windows. follow_ai_display and toolbar pin persist globally; fullscreen affects the whole local OS window, including other tabs. Custom scale percent 5..1000. Read back settings and effective/support fields.",false),
     definition::<ViewWindow>("rd_view_window","Show the target local OS window, close only its desktop view, or open_display using the stock monitor-window path (may reuse an existing tab/window). Closing the last view disconnects the logical session; session_close instead closes every view. Show/fullscreen affect the OS window shared by tabs. Window open/close returns sent with unknown completion; use displays_get to observe topology. Requires AI control.",false),
@@ -166,6 +168,26 @@ pub(super) async fn dispatch(
 ) -> Result<Reply> {
     let agent = &client.agent;
     match name {
+        "rd_connection_settings_get" | "rd_connection_settings_set" => {
+            use crate::automation::views::{self, Command};
+            let write=name=="rd_connection_settings_set";
+            let (reference,view,command,ms)=if write {
+                let p:ConnectionSet=parse(args)?;(p.session_ref,p.ui_session_id,Command::ConnectionSet{change:p.change},p.wait_ms)
+            } else {let p:ViewGet=parse(args)?;(p.session_ref,p.ui_session_id,Command::ConnectionGet,p.wait_ms)};
+            let (session,permit)=api::resolve(agent,&reference,write)?;
+            let mut value=views::request(permit,view,command,wait(ms,10000)?).await?;
+            let ready=session.snapshot().state==ConnectionState::Ready && session.snapshot().authenticated;
+            if !ready {
+                if let Some(metrics)=value["state"]["metrics"].as_object_mut() {
+                    for metric in metrics.values_mut() { metric["fresh"]=json!(false); }
+                }
+                if value["state"].is_object() {value["state"]["support"]["codecs_known"]=json!(false);}
+            }
+            if value["state"].is_object() {value["state"]["connection"]["ready"]=json!(ready);}
+            value["session"]=api::view(&session,false);
+            let confirmed=value["confirmed"]==true;
+            Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))
+        }
         "rd_view_settings_get" | "rd_view_settings_set" | "rd_view_window" => {
             use crate::automation::views::{self, Command};
             let (reference, view, command, ms) = match name {
@@ -1045,6 +1067,8 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
     match name {
         "rd_displays_get" => shape!(Read),
         "rd_display_modes_get" => shape!(DisplayModes),
+        "rd_connection_settings_get" => shape!(ViewGet),
+        "rd_connection_settings_set" => shape!(ConnectionSet),
         "rd_view_settings_get" => shape!(ViewGet),
         "rd_view_settings_set" => shape!(ViewSet),
         "rd_view_window" => shape!(ViewWindow),
@@ -1127,6 +1151,7 @@ fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
         "rd_displays_get" => &[("displays","array"),("local_views","array"),("capture_selection","object"),("virtual_displays","object"),("layout_revision","string"),("remote_current_display","string")],
         "rd_display_modes_get" => &[("display_id","string"),("known","boolean"),("modes","array|null"),("current","object"),("original","object|null"),("custom_supported","boolean"),("unknown_hint","string")],
+        "rd_connection_settings_get" | "rd_connection_settings_set" => &[("confirmed","boolean"),("delivery","string"),("state","object"),("scope","string"),("session","object"),("remote_effect_confirmed","boolean"),("ui_session_id","string"),("request_id","string"),("hint","string")],
         "rd_view_settings_get" | "rd_view_settings_set" | "rd_view_window" => &[("confirmed","boolean"),("delivery","string"),("state","object"),("scope","string"),("ui_session_id","string"),("request_id","string"),("hint","string")],
         "rd_display_select" | "rd_display_resolution_set" | "rd_virtual_display_set" => &[("delivery","string"),("confirmed","boolean"),("state","object"),("requested","object"),("scope","string"),("driver_installation_may_occur","boolean")],
         "rd_file_clipboard_cancel" => &[("job_id","string"),("delivery","string"),("partial_files_may_remain","boolean")],
