@@ -9,6 +9,8 @@ Updated: 2026-09-16. Current stage: assembling verifiable evidence. See [MCP-UPS
 | Public repository | [NexusAgentX/rustdesk](https://github.com/NexusAgentX/rustdesk) |
 | Evaluation commit | `a0df1515f706d97a06f59ae7cf0c26410f7e7e76` |
 | Upstream base | RustDesk 1.4.9, `6c578292e8ebbbec708b76986ba8c4bc7c509747` |
+| Implementation scale | At the evaluation commit, 128 files changed: 19,606 insertions and 75 deletions relative to the upstream base; includes implementation, tests, Flutter integration, localization, documentation, and build/dependency changes |
+| Implemented tools | 67 unique tools registered in `src/mcp/tools.rs`; the proposal includes their complete capability breakdown |
 | Release tag | `mcp-v0.1.9`; the annotated tag was dereferenced through the GitHub API and confirmed to point to the evaluation commit |
 | Optional evaluation build | [MCP v0.1.9](https://github.com/NexusAgentX/rustdesk/releases/tag/mcp-v0.1.9) |
 | Published assets | `RustDesk-macOS-arm64-mcp-v0.1.9.zip`, `SHA256SUMS.txt` |
@@ -26,7 +28,7 @@ Existing scripts use ad-hoc signing. Developer ID signing and notarization have 
 3. The implementation reuses the stock controlled client and existing protocol; ordinary manual remote control remains usable after MCP stops.
 4. The boundaries are explicit: current platform, SDK/toolchain requirements, historical test evidence, and uncovered paths are described separately.
 
-The first discussion seeks feedback on direction, initial scope, and build constraints. The demonstration uses the existing full prototype. The first proposed contribution could contain only read-only sessions and capture, with its exact scope guided by maintainer feedback.
+The first discussion presents the released 67-tool implementation and its approximately 20,000 added lines, then seeks feedback on direction, contribution order, and build constraints. The demonstration uses the existing implementation. A first PR containing only read-only sessions and capture would extract a reviewable increment from that work; maintainers would help choose the final scope and order of subsequent contributions.
 
 ## Evidence inventory
 
@@ -34,6 +36,7 @@ The results below come from existing records and had not been rerun when prepari
 
 | Behavior to demonstrate | Existing evidence | Preparation for this presentation |
 | --- | --- | --- |
+| Existing implementation scale and all 67 tools | Diff between the pinned base and evaluation commit; registrations in [`src/mcp/tools.rs`](https://github.com/NexusAgentX/rustdesk/blob/a0df1515f706d97a06f59ae7cf0c26410f7e7e76/src/mcp/tools.rs) | Present the capability breakdown and downloadable release before discussing PR scope; distinguish implemented interfaces from fully validated success paths |
 | Stock Windows peer, visible desktop, capture, and exact text input | [Baseline live record](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) and [final-version regression](MCP-TUNNELS-TERMINAL.md#validation) | Record calls, GUI, and remote results for the same session |
 | Approval request, human takeover, queue cancellation, and held-key release | [Baseline live record](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) | Demonstrate rejected writes after takeover and successful human input |
 | Manual session remains usable after MCP stops | [Baseline live record](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) | Retest with the final evaluation build |
@@ -62,7 +65,7 @@ Recording layout: show the local RustDesk GUI alongside MCP calls/results. Keep 
 
 Fixed demonstration text: `RustDesk MCP demo / 你好` (the Chinese text intentionally tests Unicode input). Rejected text: `BLOCKED_AFTER_TAKEOVER`. Use a distinct `operation_id` for every intended new input, including rejection checks, to avoid replaying a previous operation's deduplicated result. Use a newly returned `snapshot_id` for screenshot coordinates; do not hard-code machine-specific positions.
 
-This tool sequence is a demonstration script that can be followed manually. A standalone runnable MCP client script, actual video, and redacted logs still need to be produced. Genuinely new sessions opened by the agent default to AI control in the prototype; this demonstration attaches to an existing session to show the approval flow. The proposal explicitly describes both policies.
+This tool sequence is a demonstration script that can be followed manually. A standalone runnable MCP client script, actual video, and redacted logs still need to be produced. Genuinely new sessions opened by the agent default to AI control in the implementation; this demonstration attaches to an existing session to show the approval flow. The proposal explicitly describes both policies.
 
 ## Reproducing from source
 
@@ -102,6 +105,7 @@ Run these commands in Bash. Record the actual command, source SHA, platform, pas
 ## Progress and next steps
 
 - [x] Pin the source SHA and verify the public repository, release tag, and asset metadata.
+- [x] Verify the 128-file, +19,606/-75-line diff and 67 registered tools at the pinned evaluation commit; include their capability breakdown in the proposal.
 - [x] Write an English proposal draft and evidence inventory with sources.
 - [x] Write the demonstration flow, expected results, and source-reproduction entry point.
 - [ ] Verify the evaluation package and running instance; rerun the core demonstration paths and automated tests.

@@ -1,32 +1,53 @@
-# Proposal: optional local MCP support for visible RustDesk sessions
+# Proposal: upstreaming an optional local MCP integration for RustDesk
 
 Draft for the upstream Feature Request discussion. Prepared on 2026-09-16; the demonstration recording is pending.
 
 ## Motivation
 
-I have built a controller-side prototype that lets an MCP client observe and operate a RustDesk session while a person watches the same session in the normal Flutter GUI and can take control. The intended use is assisted remote troubleshooting and desktop tasks on machines the user is authorized to access.
+I have implemented and released a controller-side MCP integration with **67 MCP tools**. It lets an MCP client observe and operate RustDesk sessions while a person watches the same sessions in the normal Flutter GUI and can take control. The intended use is assisted remote troubleshooting and desktop tasks on machines the user is authorized to access.
 
-Would RustDesk consider an optional local MCP integration? I would like to agree on the architecture and a small initial scope before preparing upstream PRs.
+I would like to contribute this work upstream. Would RustDesk consider an optional local MCP integration? I am looking for feedback on the architecture, toolchain constraints, and how to divide the existing implementation into reviewable contributions.
 
-## Working prototype
+## Existing implementation and release
 
-The [source snapshot](https://github.com/NexusAgentX/rustdesk/tree/a0df1515f706d97a06f59ae7cf0c26410f7e7e76) is based on RustDesk 1.4.9 and currently targets a macOS ARM64 controller. Controlled machines use the existing RustDesk protocol and an unmodified client. A [macOS ARM64 build and checksum file](https://github.com/NexusAgentX/rustdesk/releases/tag/mcp-v0.1.9) are available for optional evaluation. Documented packaging uses ad-hoc signing; Developer ID signing and notarization have not been validated.
+The released [MCP v0.1.9 source snapshot](https://github.com/NexusAgentX/rustdesk/tree/a0df1515f706d97a06f59ae7cf0c26410f7e7e76) is based on RustDesk 1.4.9 and currently targets a macOS ARM64 controller. The [diff from that base](https://github.com/NexusAgentX/rustdesk/compare/6c578292e8ebbbec708b76986ba8c4bc7c509747...a0df1515f706d97a06f59ae7cf0c26410f7e7e76) adds approximately **20,000 lines: 19,606 additions and 75 deletions across 128 files**, including implementation, automated tests, Flutter integration, localization, documentation, and build/dependency changes.
 
-The prototype separates the MCP transport and tools (`src/mcp`) from session observation, input authority and GUI integration (`src/automation`). It uses the official Rust MCP SDK and Streamable HTTP. The Cargo features and the service setting are off by default; the listener binds to loopback and requires a Bearer token, with Host and Origin validation.
+Controlled machines use the existing RustDesk protocol and an unmodified client. A [macOS ARM64 build and checksum file](https://github.com/NexusAgentX/rustdesk/releases/tag/mcp-v0.1.9) are available for evaluation. Documented packaging uses ad-hoc signing; Developer ID signing and notarization have not been validated.
 
-Existing visible sessions retain human control when an agent attaches. Switching them to agent control requires local approval by default. Human takeover invalidates queued agent input and releases held keys and buttons. An agent may continue observing while the human controls the session. In the current prototype, a genuinely new session opened by the agent starts in agent control after normal remote authentication; this policy is open for upstream discussion.
+All **67 tools are registered in the [released tool catalog](https://github.com/NexusAgentX/rustdesk/blob/a0df1515f706d97a06f59ae7cf0c26410f7e7e76/src/mcp/tools.rs)**. Their implemented scope is:
+
+| Area | Tools | Implemented capabilities |
+| --- | ---: | --- |
+| Sessions and authentication | 9 | Discover, open, attach, detach, inspect, authenticate, disconnect, reconnect, and close visible desktop, file-transfer, terminal, and TCP-tunnel sessions |
+| Control and inspection | 5 | Request, cancel, and release AI control; inspect capabilities and operation records |
+| Keyboard, mouse, and desktop actions | 5 | Ordered keyboard/mouse input, screenshot-based coordinates, capture and refresh, remote lock and restart |
+| Displays and local views | 8 | Display topology and modes, capture/view selection, resolution and virtual-display requests, scaling, cursor settings, and local window control |
+| Connection quality and audio | 2 | Quality/FPS and codec preferences, true color, audio settings, and observed connection metrics |
+| Privacy and security | 6 | Security-state queries, input blocking, privacy mode, elevation requests, OS password input, and secure attention |
+| File transfer and management | 8 | Directory browsing, bidirectional transfers, progress, cancellation, conflict handling, transfer resumption, and file management |
+| Text clipboard | 5 | Synchronization settings, reading, writing/pasting, and sending text as keystrokes |
+| Native file clipboard | 5 | Settings and state, copy, paste, and cancellation |
+| Chat and recording | 4 | Text-chat send/read and video-recording control/state |
+| Interactive terminals | 6 | List, create, read, write, resize, and close visible terminal tabs |
+| TCP tunnels | 4 | List, add, remove, and authenticate managed loopback listeners |
+
+These are implemented interfaces; peer/platform support and live-test coverage vary by capability, as described below and in the [release notes](https://github.com/NexusAgentX/rustdesk/releases/tag/mcp-v0.1.9).
+
+The implementation separates MCP transport and tools (`src/mcp`) from session observation, input authority and GUI integration (`src/automation`). It uses the official Rust MCP SDK and Streamable HTTP. The Cargo features and the service setting are off by default; the listener binds to loopback and requires a Bearer token, with Host and Origin validation.
+
+Existing visible sessions retain human control when an agent attaches. Switching them to agent control requires local approval by default. Human takeover invalidates queued agent input and releases held keys and buttons. An agent may continue observing while the human controls the session. In the current implementation, a genuinely new session opened by the agent starts in agent control after normal remote authentication; this policy is open for upstream discussion.
 
 ## Evidence and limitations
 
 The [recorded desktop validation](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) covers captures, text and keyboard input, local approval, human takeover during input, reconnect behavior and continued manual use after stopping MCP. Later [display validation](MCP-FILE-RECOVERY-DISPLAYS.md#validation-record) covers a stock Windows 1.4.9 peer with two displays, negative coordinates and mixed Windows DPI. The [latest validation record](MCP-TUNNELS-TERMINAL.md#validation) reports 74 automation tests and 12 MCP tests passing. These are existing project records; an independent reproduction and a short public demonstration are still being prepared.
 
-Other controller platforms have not been validated. Some advanced paths, including successful 2FA and virtual-display creation, still need suitable test environments. The [SDK requires Rust 1.88 or later](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml); the prototype was built with 1.97.1, while [upstream's current macOS build workflow](https://github.com/rustdesk/rustdesk/blob/0ac2e7fb5269b9dbdab85f7213b30d76ba2d49f9/.github/workflows/flutter-build.yml) uses 1.81. Toolchain and dependency choices need agreement. A contribution would also need adapting to current master, including the move to `libs/base`.
+Other controller platforms have not been validated. Some advanced paths, including successful 2FA and virtual-display creation, still need suitable test environments. The [SDK requires Rust 1.88 or later](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml); the released implementation was built with 1.97.1, while [upstream's macOS build workflow at the checked revision](https://github.com/rustdesk/rustdesk/blob/0ac2e7fb5269b9dbdab85f7213b30d76ba2d49f9/.github/workflows/flutter-build.yml) uses 1.81. Toolchain and dependency choices need agreement. A contribution would also need adapting to current master, including the move to `libs/base`.
 
 ## Suggested contribution scope
 
-The prototype includes additional terminal, file and tunnel tools. For an initial contribution, I propose a smaller read-only increment: optional service and authentication, GUI settings and binding indication, listing/attaching visible desktop sessions, and bounded screenshots. Desktop input and human takeover would follow together; terminal and other capabilities could be separate changes.
+I would like to contribute the existing implementation in reviewable increments, with maintainers helping decide the final scope and order. One possible first PR would extract and adapt the read-only foundation: optional service and authentication, GUI settings and binding indication, listing/attaching visible desktop sessions, and bounded screenshots. Desktop input and human takeover would follow together. The remaining implemented capabilities above could then be grouped into separate changes according to maintainer priorities.
 
-Each increment would include relevant tests and a description of effects on existing runtime paths, including behavior with the feature disabled.
+This is a proposed integration sequence for the existing 67-tool implementation. Each increment would include relevant tests and a description of effects on existing runtime paths, including behavior with the feature disabled.
 
 ## Questions for maintainers
 
