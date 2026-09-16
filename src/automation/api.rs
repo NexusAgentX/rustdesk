@@ -202,6 +202,7 @@ pub fn reconnect(permit: &Permit, force_relay: bool) -> Result<()> {
     }
     let core = sessions::core(&permit.authority.session_id)
         .ok_or_else(|| BridgeError::new("GUI_UNAVAILABLE", "GUI session is unavailable"))?;
+    session.control().prepare_reconnect(permit)?;
     core.reconnect(force_relay);
     Ok(())
 }

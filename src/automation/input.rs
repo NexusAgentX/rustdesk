@@ -18,6 +18,35 @@ use std::{
     time::Duration,
 };
 
+// Keep the wire names and schema enum generated from the same list.
+macro_rules! key_names {
+    ($($name:ident),+ $(,)?) => {
+        /// Physical key name: KeyA..KeyZ, Digit0..Digit9, or a named control key.
+        /// Use Enter for return and the text action for literal text.
+        #[derive(Clone, Copy, Deserialize)]
+        #[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
+        pub enum KeyName {
+            $($name),+
+        }
+        impl KeyName {
+            fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$name => stringify!($name)),+
+                }
+            }
+        }
+    };
+}
+key_names! {
+    KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM,
+    KeyN, KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+    Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
+    Enter, Tab, Escape, Backspace, Delete, Insert, Space,
+    ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown,
+    ControlLeft, ControlRight, ShiftLeft, ShiftRight, AltLeft, AltRight, MetaLeft, MetaRight,
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+}
+
 #[derive(Clone, Deserialize)]
 #[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -78,21 +107,23 @@ pub enum Action {
         position: Option<Position>,
     },
     KeyDown {
-        key: String,
+        key: KeyName,
     },
     KeyUp {
-        key: String,
+        key: KeyName,
     },
     KeyPress {
-        key: String,
+        key: KeyName,
     },
     Shortcut {
         modifiers: Vec<Modifier>,
-        key: String,
+        key: KeyName,
     },
     Text {
         text: String,
     },
+    /// Pause this batch for 0..30000 ms; cancellable, without claiming application completion.
+    Wait { duration_ms: u64 },
     ReleaseAll,
 }
 #[derive(Clone, Copy, Deserialize)]
@@ -220,7 +251,11 @@ fn key_event(name: &str, down: bool) -> Result<Event> {
             "F10" => ControlKey::F10,
             "F11" => ControlKey::F11,
             "F12" => ControlKey::F12,
-            _ => return Err(BridgeError::invalid("Unsupported KeyName")),
+            _ => {
+                return Err(BridgeError::invalid(format!(
+                    "Unsupported key name {name:?}; use KeyA..KeyZ, Digit0..Digit9, or a named control key such as Enter or ArrowLeft"
+                )))
+            }
         };
         key.set_control_key(code);
     }
@@ -354,18 +389,20 @@ fn expand(
             events.push(mouse(3, -x, -y, None));
         }
         Action::KeyDown { key } | Action::KeyUp { key } | Action::KeyPress { key } => {
+            let key = key.as_str();
             let down = !matches!(action, Action::KeyUp { .. });
             events.push(key_event(key, down)?);
             if matches!(action, Action::KeyPress { .. }) {
                 events.push(key_event(key, false)?);
                 held.keys.remove(key);
             } else if down {
-                held.keys.insert(key.clone());
+                held.keys.insert(key.to_owned());
             } else {
                 held.keys.remove(key);
             }
         }
         Action::Shortcut { modifiers, key } => {
+            let key = key.as_str();
             if modifiers.len() > 4 {
                 return Err(BridgeError::invalid("At most four shortcut modifiers"));
             }
@@ -377,9 +414,9 @@ fn expand(
                     newly.push(name.to_owned());
                 }
             }
-            if held.keys.insert(key.clone()) {
+            if held.keys.insert(key.to_owned()) {
                 events.push(key_event(key, true)?);
-                newly.push(key.clone());
+                newly.push(key.to_owned());
             } else {
                 key_event(key, true)?;
             }
@@ -402,6 +439,12 @@ fn expand(
                 pause: 0,
                 release: false,
             });
+        }
+        Action::Wait { duration_ms } => {
+            if *duration_ms > 30_000 {
+                return Err(BridgeError::invalid("Wait duration must be 0..30000 ms"));
+            }
+            events.push(Event { message: Message::new(), mapping: None, pause: *duration_ms, release: false });
         }
         Action::ReleaseAll => {
             events.push(Event {
@@ -439,8 +482,8 @@ pub fn validate(permit: &Permit, actions: &[Action], snapshot: Option<&str>) -> 
             .map(|e| e.pause)
             .sum::<u64>();
     }
-    if duration > 5000 {
-        return Err(BridgeError::invalid("Input batch exceeds five seconds"));
+    if duration > 30_000 {
+        return Err(BridgeError::invalid("Input batch delays exceed 30000 ms"));
     }
     Ok(())
 }
@@ -504,7 +547,7 @@ pub async fn send(
         }
     }
     let mut cleanup = Cleanup(permit.clone(), true);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     let mut progress = Progress {
         delivery: "not_sent",
         completed_actions: 0,
@@ -514,11 +557,12 @@ pub async fn send(
         held_buttons: vec![],
         error: None,
     };
+    let mut followed_display = None;
     for (index, action) in actions.iter().enumerate() {
         let events = expand(&permit, action, snapshot.as_deref(), &mut held);
         let result = async {
             for mut event in events? {
-                physical_character(&mut event.message, &platform)?;
+                physical_key(&mut event.message, &platform)?;
                 if event.pause > 0 {
                     tokio::select! {
                         biased;
@@ -527,10 +571,19 @@ pub async fn send(
                     }
                 }
                 permit.check()?;
+                if event.message.union.is_none() && !event.release { continue; }
+                let display = event.mapping.as_ref().map(|m| m.stamp.display_id);
+                let follow = !matches!(action, Action::Move { .. }) && display.is_some() && display != followed_display;
                 progress.sent_events +=
                     wire::send_event(permit.clone(), event.message, event.mapping, event.release)
                         .await?;
                 progress.delivery = "sent";
+                if follow {
+                    followed_display = display;
+                    if let (Some(display), Some(core)) = (display, super::sessions::core(&permit.authority.session_id)) {
+                        core.ui_handler.push_event("automation_follow_display", &[("display_idx", display.to_string())], &[]);
+                    }
+                }
             }
             Ok::<_, BridgeError>(())
         };
@@ -579,13 +632,10 @@ pub fn forget(session: &str) {
     held_states().lock().unwrap().remove(session);
 }
 
-fn physical_character(message: &mut Message, platform: &str) -> Result<()> {
+fn physical_key(message: &mut Message, platform: &str) -> Result<()> {
     use hbb_common::message_proto::{key_event, message as proto, KeyboardMode};
     use rdev::Key;
     let Some(proto::Union::KeyEvent(event)) = &mut message.union else {
-        return Ok(());
-    };
-    let Some(key_event::Union::Chr(chr)) = event.union else {
         return Ok(());
     };
     const LETTERS: [Key; 26] = [
@@ -628,12 +678,32 @@ fn physical_character(message: &mut Message, platform: &str) -> Result<()> {
         Key::Num8,
         Key::Num9,
     ];
-    let key = if (b'a' as u32..=b'z' as u32).contains(&chr) {
-        LETTERS[(chr - b'a' as u32) as usize]
-    } else if (b'0' as u32..=b'9' as u32).contains(&chr) {
-        DIGITS[(chr - b'0' as u32) as usize]
-    } else {
-        return Err(BridgeError::invalid("Unsupported physical key"));
+    let key = match event.union {
+        Some(key_event::Union::Chr(chr)) if (b'a' as u32..=b'z' as u32).contains(&chr) => {
+            LETTERS[(chr - b'a' as u32) as usize]
+        }
+        Some(key_event::Union::Chr(chr)) if (b'0' as u32..=b'9' as u32).contains(&chr) => {
+            DIGITS[(chr - b'0' as u32) as usize]
+        }
+        Some(key_event::Union::Chr(_)) => {
+            return Err(BridgeError::invalid("Unsupported physical key"));
+        }
+        // Navigation keys must retain their physical identity. Legacy Windows
+        // injection treats them as numpad keys and temporarily toggles NumLock.
+        Some(key_event::Union::ControlKey(code)) => match code.enum_value().ok() {
+            Some(ControlKey::LeftArrow) => Key::LeftArrow,
+            Some(ControlKey::RightArrow) => Key::RightArrow,
+            Some(ControlKey::UpArrow) => Key::UpArrow,
+            Some(ControlKey::DownArrow) => Key::DownArrow,
+            Some(ControlKey::Home) => Key::Home,
+            Some(ControlKey::End) => Key::End,
+            Some(ControlKey::PageUp) => Key::PageUp,
+            Some(ControlKey::PageDown) => Key::PageDown,
+            Some(ControlKey::Insert) => Key::Insert,
+            Some(ControlKey::Delete) => Key::Delete,
+            _ => return Ok(()),
+        },
+        _ => return Ok(()),
     };
     let code = match platform {
         "Windows" => rdev::win_scancode_from_key(key),
@@ -644,7 +714,7 @@ fn physical_character(message: &mut Message, platform: &str) -> Result<()> {
     .ok_or_else(|| {
         BridgeError::new(
             "UNSUPPORTED",
-            "Physical letter/digit keys are not mapped for this remote platform; use text",
+            "Physical key is not mapped for this remote platform",
         )
     })?;
     event.set_chr(code);
@@ -683,7 +753,7 @@ mod tests {
     #[test]
     fn letters_use_remote_physical_codes_so_shift_is_not_discarded() {
         let mut event = key_event("KeyA", true).unwrap();
-        physical_character(&mut event.message, "Windows").unwrap();
+        physical_key(&mut event.message, "Windows").unwrap();
         let key = event.message.key_event();
         assert_eq!(key.chr(), 0x1e);
         assert_eq!(
@@ -693,16 +763,35 @@ mod tests {
         assert!(key.down);
     }
     #[test]
+    fn windows_navigation_keys_keep_extended_scancodes() {
+        for (name, scan) in [
+            ("ArrowLeft", 0xe04b), ("ArrowRight", 0xe04d),
+            ("ArrowUp", 0xe048), ("ArrowDown", 0xe050),
+            ("Home", 0xe047), ("End", 0xe04f),
+            ("PageUp", 0xe049), ("PageDown", 0xe051),
+            ("Insert", 0xe052), ("Delete", 0xe053),
+        ] {
+            for down in [true, false] {
+                let mut event = key_event(name, down).unwrap();
+                physical_key(&mut event.message, "Windows").unwrap();
+                let key = event.message.key_event();
+                assert_eq!(key.chr(), scan, "{name}");
+                assert_eq!(key.mode.enum_value().unwrap(), hbb_common::message_proto::KeyboardMode::Map);
+                assert_eq!(key.down, down);
+            }
+        }
+    }
+    #[test]
     fn all_supported_letters_digits_and_control_keys_have_valid_messages() {
         for c in b'A'..=b'Z' {
             for platform in ["Windows", "Linux", "Mac OS"] {
                 let mut event = key_event(&format!("Key{}", c as char), true).unwrap();
-                physical_character(&mut event.message, platform).unwrap();
+                physical_key(&mut event.message, platform).unwrap();
             }
         }
         for c in b'0'..=b'9' {
             let mut event = key_event(&format!("Digit{}", c as char), false).unwrap();
-            physical_character(&mut event.message, "Windows").unwrap();
+            physical_key(&mut event.message, "Windows").unwrap();
         }
         for key in ["Enter", "ControlRight", "ShiftLeft", "MetaRight", "F12"] {
             key_event(key, true).unwrap();

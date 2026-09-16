@@ -2,10 +2,10 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 macro_rules! params {
-    ($name:ident { $($field:ident : $ty:ty),* $(,)? }) => {
+    ($name:ident { $( $(#[$attr:meta])* $field:ident : $ty:ty),* $(,)? }) => {
         #[derive(Deserialize, JsonSchema)]
         #[serde(deny_unknown_fields)]
-        pub struct $name { $(pub $field: $ty),* }
+        pub struct $name { $( $(#[$attr])* pub $field: $ty),* }
     };
 }
 params!(List { scope: Option<Scope>, cursor: Option<String>, limit: Option<u32> });
@@ -25,6 +25,7 @@ pub enum Kind {
 params!(Open { operation_id: Option<String>, peer_id: String, password: Option<String>, kind: Option<Kind>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(Attach { session_id: String, operation_id: Option<String> });
 params!(Write { session_ref: String, operation_id: Option<String> });
+params!(WaitWrite { session_ref: String, operation_id: Option<String>, wait_ms: Option<u64> });
 params!(Read {
     session_ref: String
 });
@@ -46,8 +47,31 @@ pub enum Credentials {
 params!(Reconnect { session_ref: String, operation_id: Option<String>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(ControlRequest { session_ref: String, operation_id: Option<String>, reason: Option<String>, wait_ms: Option<u64> });
 params!(ControlCancel { session_ref: String, operation_id: Option<String>, approval_id: String });
-params!(Capture { session_ref: String, display_id: Option<String>, after_frame_seq: Option<String>, wait_ms: Option<u64>, max_width: Option<u32>, max_height: Option<u32> });
-params!(CaptureOptions { display_id: Option<String>, wait_ms: Option<u64>, max_width: Option<u32>, max_height: Option<u32> });
+params!(Capture {
+    session_ref: String,
+    display_id: Option<String>,
+    /// Only return frames newer than this sequence; requires an actual display_id.
+    after_frame_seq: Option<String>,
+    /// Maximum wait for a qualifying frame, 0..30000 ms (default 0).
+    /// Returns immediately if one is cached; without after_frame_seq any cached frame qualifies.
+    /// Does not delay capture or wait for the remote application to finish.
+    wait_ms: Option<u64>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+});
+params!(CaptureOptions {
+    display_id: Option<String>,
+    /// Delay before observing after input sending finishes, 0..30000 ms (default 0).
+    /// Separate from wait_ms; does not guarantee remote input processing or application completion.
+    delay_ms: Option<u64>,
+    /// After delay_ms, wait up to 0..30000 ms (default 1000) for a frame newer than
+    /// the frame recorded BEFORE input sending. Returns immediately if one is cached,
+    /// including a frame received during sending or the delay. Does not wait for visual stability.
+    /// Timeout returns unchanged without a PNG if a frame exists, otherwise NO_FRAME.
+    wait_ms: Option<u64>,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+});
 params!(Input { session_ref: String, operation_id: Option<String>, actions: Vec<crate::automation::input::Action>, snapshot_id: Option<String>, capture: Option<CaptureOptions> });
 params!(TerminalCreate { session_ref: String, operation_id: Option<String>, rows: Option<u32>, cols: Option<u32>, wait_ms: Option<u64> });
 params!(TerminalRead { session_ref: String, terminal_id: String, cursor: Option<String>, format: Option<OutputFormat>, max_bytes: Option<usize>, wait_ms: Option<u64> });
@@ -75,6 +99,27 @@ params!(TerminalClose { session_ref: String, operation_id: Option<String>, termi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_keys_and_capture_timing_are_explicit() {
+        let _: Input = serde_json::from_value(serde_json::json!({"session_ref":"r", "actions":[{"type":"wait","duration_ms":500}]})).unwrap();
+        let _: WaitWrite = serde_json::from_value(serde_json::json!({"session_ref":"r", "wait_ms":1000})).unwrap();
+        for name in ["L", "l", "Return", "UnsupportedKey"] {
+            let value = serde_json::json!({"session_ref":"r","actions":[{"type":"key_press","key":name}]});
+            let error = serde_json::from_value::<Input>(value).err().unwrap().to_string();
+            assert!(error.contains(name));
+        }
+        let input: Input = serde_json::from_value(serde_json::json!({
+            "session_ref":"r", "actions":[{"type":"shortcut","modifiers":["Control"],"key":"KeyL"}],
+            "capture":{"delay_ms":500,"wait_ms":1000}
+        })).unwrap();
+        let capture = input.capture.unwrap();
+        assert_eq!(capture.delay_ms, Some(500));
+        assert_eq!(capture.wait_ms, Some(1000));
+        let schema = serde_json::to_string(&schemars::schema_for!(Input)).unwrap();
+        assert!(schema.contains("KeyL"));
+        assert!(schema.contains("delay_ms"));
+        assert!(schema.contains("BEFORE input sending"));
+    }
     #[test]
     fn action_variants_and_tool_parameters_reject_unknown_fields() {
         assert!(serde_json::from_str::<Input>(

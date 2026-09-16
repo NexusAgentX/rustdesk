@@ -351,6 +351,20 @@ class FfiModel with ChangeNotifier {
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
+      } else if (name == 'automation_follow_display') {
+        if (bind.mainGetLocalOption(key: 'mcp-follow-display') == 'Y') {
+          final display = int.tryParse(evt['display_idx'] ?? '');
+          if (display != null && display >= 0 && display < pi.displays.length) {
+            if (bind.sessionGetDisplaysAsIndividualWindows(sessionId: sessionId) == 'Y') {
+              if (pi.currentDisplay == display) {
+                handleToast({'text': 'AI · ${display + 1}', 'dur_msec': 1000}, sessionId, peerId);
+              }
+            } else if (pi.currentDisplay != display && pi.currentDisplay != kAllDisplayValue) {
+              await handleFollowCurrentDisplay(evt, sessionId, peerId);
+              switchToNewDisplay(display, sessionId, peerId);
+            }
+          }
+        }
       } else if (name == 'switch_display') {
         // switch display is kept for backward compatibility
         handleSwitchDisplay(evt, sessionId, peerId);

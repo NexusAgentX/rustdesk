@@ -140,6 +140,14 @@ class _McpSettingsState extends State<McpSettings> {
           title: Text(translate('Require human approval for AI control')),
           value: settings['approval_required'] != false,
           onChanged: (value) => _configure(approval: value)),
+      SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(translate('Follow AI display')),
+          value: bind.mainGetLocalOption(key: 'mcp-follow-display') == 'Y',
+          onChanged: (value) {
+            bind.mainSetLocalOption(key: 'mcp-follow-display', value: value ? 'Y' : 'N');
+            setState(() {});
+          }),
       if (address != null)
         Row(children: [
           Expanded(child: SelectableText(address)),

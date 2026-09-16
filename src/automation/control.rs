@@ -86,6 +86,7 @@ struct State {
     // Once installed, queued unmarked GUI writes cannot cross a handover.
     installed: bool,
     fenced: bool,
+    reconnecting: bool,
 }
 
 pub struct Authority {
@@ -193,6 +194,7 @@ impl Authority {
                 released: None,
                 installed: false,
                 fenced: false,
+                reconnecting: false,
             }),
         }
     }
@@ -485,6 +487,7 @@ impl Authority {
             }
         }
         Self::end_approval(&mut state, "cancelled");
+        state.reconnecting = false;
         Self::rotate(&mut state);
         state.fenced = true;
         state.pending = Some((state.generation, Mode::Human));
@@ -532,13 +535,27 @@ impl Authority {
         self.notify(&mut state);
     }
 
-    pub fn disconnected(&self, epoch: u64, _closed: bool) {
+    pub fn prepare_reconnect(&self, permit: &Permit) -> Result<()> {
+        permit.check()?;
+        let mut state = self.state.lock().unwrap();
+        if state.generation != permit.generation {
+            return Err(BridgeError::new("CONTROL_EXPIRED", "Control changed before reconnect"));
+        }
+        state.reconnecting = true;
+        Ok(())
+    }
+
+    pub fn disconnected(&self, epoch: u64, closed: bool) {
         let mut state = self.state.lock().unwrap();
         Self::end_approval(&mut state, "cancelled");
+        let preserve = state.reconnecting && !closed && state.mode == Mode::Ai;
+        if closed || epoch > state.epoch {
+            state.reconnecting = false;
+        }
         state.epoch = epoch;
         state.fenced = true;
         Self::rotate(&mut state);
-        state.mode = Mode::Human;
+        state.mode = if preserve { Mode::Ai } else { Mode::Human };
         state.pending = None;
 
         self.notify(&mut state);
@@ -558,6 +575,22 @@ pub fn set_approval_required(required: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explicit_reconnect_preserves_control_but_human_takeover_wins() {
+        let (authority, agent, permit) = joined(true);
+        authority.prepare_reconnect(&permit).unwrap();
+        authority.disconnected(0, false);
+        authority.disconnected(1, false);
+        assert!(matches!(authority.view().mode, Mode::Ai));
+        assert!(permit.check().is_err());
+        let reference = authority.view().session_ref.unwrap();
+        let current = authority.resolve(&agent, &reference, true).unwrap();
+        authority.prepare_reconnect(&current).unwrap();
+        authority.release(None, false).unwrap();
+        authority.disconnected(2, false);
+        assert!(matches!(authority.view().mode, Mode::Human));
+    }
+
     fn joined(created: bool) -> (Arc<Authority>, Agent, Permit) {
         let authority = Arc::new(Authority::new(Uuid::new_v4().to_string()));
         let agent = Agent::new();

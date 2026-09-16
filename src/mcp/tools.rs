@@ -70,14 +70,14 @@ pub fn definitions() -> Vec<Tool> {
     definition::<Write>("rd_session_detach","Detach this binding, cancel queued input and return control to the human. Keep the GUI and remote connection.",false),
     definition::<Get>("rd_session_get","Read current session state and session_ref. Optionally wait for a revision change or query an operation_id. Old references remain read-only within the binding.",true),
     definition::<Authenticate>("rd_session_authenticate","Submit credentials for the current authentication challenge under AI control. Does not save passwords or trust devices.",false),
-    definition::<Write>("rd_session_disconnect","Disconnect the remote connection while retaining the visible GUI container. Revokes AI control.",false),
-    definition::<Reconnect>("rd_session_reconnect","Explicitly reconnect the visible session. Revokes prior control; request control again after reconnecting.",false),
-    definition::<Write>("rd_session_close","Close all GUI views of this logical session and its remote connection. Other sessions remain open.",false),
+    definition::<WaitWrite>("rd_session_disconnect","Disconnect the remote connection while retaining the visible GUI container. Revokes AI control. wait_ms defaults to 10000; timeout returns pending; query session_get for completion.",false),
+    definition::<Reconnect>("rd_session_reconnect","Explicitly reconnect the visible session. Preserves the authorized AI control through reconnect and authentication unless the human takes over. Refresh session_ref after reconnecting.",false),
+    definition::<WaitWrite>("rd_session_close","Close all GUI views of this logical session and its remote connection. Other sessions remain open. wait_ms defaults to 10000; timeout returns pending; query session_get for completion.",false),
     definition::<ControlRequest>("rd_control_request","Explicitly request AI control. Human approval is required by default. Repeated pending requests do not extend the deadline.",false),
     definition::<ControlCancel>("rd_control_cancel","Cancel one pending approval request. Returns an already-final result without undoing a completed control grant.",false),
     definition::<Write>("rd_control_release","Voluntarily return control to the human, invalidate queued AI input and release held keys and buttons. Keep the binding for reading.",false),
-    definition::<Capture>("rd_screen_capture","Read remote decoded pixels as a native PNG image block, including geometry and snapshot_id for input. Available under human control. Specify actual display_id with after_frame_seq.",true),
-    definition::<Input>("rd_input_send","Send 1..32 ordered input actions under AI control. Coordinate actions require a recent snapshot_id. Use operation_id for safe retries. Optional capture observes after sending; observation failures never replay input.",false),
+    definition::<Capture>("rd_screen_capture","Read remote decoded pixels as a native PNG image block, including geometry and snapshot_id for input. Available under human control. Specify actual display_id with after_frame_seq. wait_ms is a maximum wait for a qualifying frame, not a fixed delay; cached frames may return immediately.",true),
+    definition::<Input>("rd_input_send","Send 1..32 ordered input actions under AI control. Coordinate actions require a recent snapshot_id. Keys use exact names such as KeyL, Digit1, Enter and ArrowLeft. Example Ctrl+L: {\"type\":\"shortcut\",\"modifiers\":[\"Control\"],\"key\":\"KeyL\"}. Use text actions for literal text. Insert {\"type\":\"wait\",\"duration_ms\":500} before subsequent actions when the application needs time; total batch delays must be <=30000 ms. Use operation_id for safe retries. Optional capture.delay_ms delays observation after sending (default 0, max 30000 ms); capture.wait_ms then waits at most for a frame newer than the pre-input frame (default 1000, max 30000 ms), returning immediately if available. Neither guarantees remote application completion. Observation failures never replay input.",false),
     definition::<Read>("rd_terminal_list","List terminal instances in this terminal connection without creating one.",true),
     definition::<TerminalCreate>("rd_terminal_create","Create a visible GUI terminal tab before requesting a remote interactive shell. Requires a terminal connection and AI control.",false),
     definition::<TerminalRead>("rd_terminal_read","Incrementally read bounded raw terminal output, including ANSI and carriage returns. Cursors count bytes; OUTPUT_GAP reports recoverable oldest_cursor. Shell exit status is not a command exit status.",true),
@@ -390,6 +390,9 @@ pub(super) async fn dispatch(
             }
             if let Some(c) = &p.capture {
                 wait(c.wait_ms, 1000)?;
+                if c.delay_ms.unwrap_or(0) > 30_000 {
+                    return Err(BridgeError::invalid("capture.delay_ms must be 0..30000"));
+                }
                 if !(1..=3840).contains(&c.max_width.unwrap_or(1600))
                     || !(1..=3840).contains(&c.max_height.unwrap_or(1600))
                 {
@@ -431,6 +434,11 @@ pub(super) async fn dispatch(
                     let (id, sequence) = observation_cursor.ok_or_else(|| {
                         BridgeError::new("INTERNAL_ERROR", "Missing observation cursor")
                     })?;
+                    // Keep the pre-input cursor so results received during sending or
+                    // the delay remain eligible. The surrounding select cancels this delay.
+                    if let Some(delay) = c.delay_ms.filter(|ms| *ms > 0) {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                    }
                     let after = Some(sequence);
                     screen::capture(
                         &permit,
@@ -500,16 +508,28 @@ pub(super) async fn dispatch(
             )
         }
         "rd_session_disconnect" => {
-            let p: Write = parse(args)?;
+            let p: WaitWrite = parse(args)?;
+            let ms = wait(p.wait_ms, 10000)?;
             let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
-            api::disconnect(permit)?;
-            Ok(Reply::success(json!({"session":api::view(&session,false)})).status("pending"))
+            api::disconnect(permit.clone())?;
+            let done = api::wait_until(&session, &permit, ms, |s| matches!(s.state, ConnectionState::Disconnected | ConnectionState::Closed)).await?;
+            Ok(Reply::success(json!({"session":api::view(&session,false)})).status(if done { "completed" } else { "pending" }))
         }
         "rd_session_reconnect" => {
             let p: Reconnect = parse(args)?;
             let ms = wait(p.wait_ms, 10000)?;
             let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
             let epoch = session.snapshot().connection_epoch;
+            // End the old IO loop before starting a new one: both loops share login state.
+            if session.snapshot().state == ConnectionState::Ready {
+                session.control().prepare_reconnect(&permit)?;
+                api::disconnect(permit.clone())?;
+                if !api::wait_until(&session, &permit, 10000, |s| s.state == ConnectionState::Disconnected).await? {
+                    return Err(BridgeError::new("NOT_READY", "Previous connection has not disconnected yet"));
+                }
+            }
+            let reference = current(&session)?;
+            let (_, permit) = api::resolve(agent, &reference, true)?;
             api::reconnect(&permit, p.force_relay.unwrap_or(false))?;
             let _ = api::wait_until(&session, &permit, ms, |s| {
                 s.connection_epoch > epoch
@@ -534,10 +554,12 @@ pub(super) async fn dispatch(
             )
         }
         "rd_session_close" => {
-            let p: Write = parse(args)?;
+            let p: WaitWrite = parse(args)?;
+            let ms = wait(p.wait_ms, 10000)?;
             let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
-            gui::close(permit)?;
-            Ok(Reply::success(json!({"session_id":session.snapshot().session_id,"closed":false,"remaining_views":session.snapshot().ui_session_ids.len()})).status("pending"))
+            gui::close(permit.clone())?;
+            let done = api::wait_until(&session, &permit, ms, |s| s.state == ConnectionState::Closed && s.ui_session_ids.is_empty()).await?;
+            Ok(Reply::success(json!({"session_id":session.snapshot().session_id,"closed":done,"remaining_views":session.snapshot().ui_session_ids.len(),"session":api::view(&session,false)})).status(if done { "completed" } else { "pending" }))
         }
         "rd_terminal_list" => {
             let p: Read = parse(args)?;
@@ -705,10 +727,8 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_session_attach" => shape!(Attach),
         "rd_session_get" => shape!(Get),
         "rd_session_list" => shape!(List),
-        "rd_session_detach"
-        | "rd_session_disconnect"
-        | "rd_session_close"
-        | "rd_control_release" => shape!(Write),
+        "rd_session_detach" | "rd_control_release" => shape!(Write),
+        "rd_session_disconnect" | "rd_session_close" => shape!(WaitWrite),
         "rd_session_authenticate" => shape!(Authenticate),
         "rd_session_reconnect" => shape!(Reconnect),
         "rd_control_request" => shape!(ControlRequest),
@@ -767,6 +787,7 @@ fn output_schema(name: &str) -> Map<String, Value> {
             ("session_id", "string"),
             ("closed", "boolean"),
             ("remaining_views", "integer"),
+            ("session", "object"),
         ],
         "rd_control_request" => &[
             ("session_ref", "string"),

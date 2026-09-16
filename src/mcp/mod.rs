@@ -191,7 +191,7 @@ pub fn install_runtime() {
                 match tokio::task::spawn_blocking(|| credentials::load_or_create(false)).await {
                     Ok(Ok(token)) => token,
                     _ => {
-                        failed("Could not load MCP credential from Keychain");
+                        failed("Could not load MCP credential file");
                         continue;
                     }
                 };
