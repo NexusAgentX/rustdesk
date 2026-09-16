@@ -26,3 +26,6 @@ pub mod views;
 
 pub mod desktop;
 pub mod security;
+
+pub mod chat;
+pub mod recording;

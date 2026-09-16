@@ -1546,6 +1546,8 @@ pub struct VideoHandler {
     pub rgb: ImageRgb,
     pub texture: ImageTexture,
     recorder: Arc<Mutex<Option<Recorder>>>,
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    automation_recording: Option<crate::automation::recording::Observer>,
     record: bool,
     _display: usize, // useful for debug
     fail_counter: usize,
@@ -1578,6 +1580,8 @@ impl VideoHandler {
             rgb: ImageRgb::new(rgba_format, crate::get_dst_align_rgba()),
             texture: Default::default(),
             recorder: Default::default(),
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            automation_recording: None,
             record: false,
             _display,
             fail_counter: 0,
@@ -1630,7 +1634,14 @@ impl VideoHandler {
                         } else {
                             (self.texture.w, self.texture.h)
                         };
-                        r.write_frame(frame, w, h).ok();
+                        let result=r.write_frame(frame, w, h);
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer)=&mut self.automation_recording {
+                            if let Err(error)=&result { observer.error(&error.to_string()); }
+                            observer.drain();
+                        }
+                        #[cfg(not(all(feature = "automation", target_os = "macos")))]
+                        let _=result;
                     });
                 }
                 res
@@ -1655,8 +1666,22 @@ impl VideoHandler {
     }
 
     /// Start or stop screen record.
-    pub fn record_screen(&mut self, start: bool, id: String, display_idx: usize, camera: bool) {
+    pub fn record_screen(&mut self, start: bool, id: String, display_idx: usize, camera: bool,
+        #[cfg(all(feature = "automation", target_os = "macos"))] automation: Option<(crate::automation::recording::Shared,u64)>,
+    ) {
         self.record = false;
+        self.recorder = Default::default();
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        { self.automation_recording = None; }
+        #[allow(unused_mut)]
+        let mut record_tx=None;
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if start {
+            if let Some((store,generation))=automation {
+                let (observer,sender)=crate::automation::recording::Observer::new(store,generation,display_idx);
+                record_tx=Some(sender);self.automation_recording=Some(observer);
+            }
+        }
         if start {
             self.recorder = Recorder::new(RecorderContext {
                 server: false,
@@ -1664,7 +1689,12 @@ impl VideoHandler {
                 dir: crate::ui_interface::video_save_directory(false),
                 display_idx,
                 camera,
-                tx: None,
+                tx: record_tx,
+            })
+            .map_err(|error| {
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(observer)=&mut self.automation_recording {observer.error(&error.to_string());}
+                error
             })
             .map_or(Default::default(), |r| Arc::new(Mutex::new(Some(r))));
         } else {
@@ -1672,6 +1702,14 @@ impl VideoHandler {
         }
 
         self.record = start;
+    }
+}
+
+#[cfg(all(feature = "automation", target_os = "macos"))]
+impl Drop for VideoHandler {
+    fn drop(&mut self) {
+        drop(self.recorder.lock().unwrap().take());
+        self.automation_recording=None;
     }
 }
 
@@ -2868,6 +2906,8 @@ pub enum MediaData {
     RecordScreen(bool),
     #[cfg(all(feature = "automation", target_os = "macos"))]
     AutomationLayout(Arc<std::sync::atomic::AtomicU64>, u64),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationRecord(bool, u64),
 }
 
 pub type MediaSender = mpsc::Sender<MediaData>;
@@ -2893,6 +2933,8 @@ pub fn start_video_thread<F, T>(
     let mut video_callback = video_callback;
     let mut last_chroma = None;
     let is_view_camera = session.is_view_camera();
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    let recording=crate::automation::sessions::for_core(&session).map(|s|s.recording());
 
     std::thread::spawn(move || {
         #[cfg(windows)]
@@ -2935,7 +2977,10 @@ pub fn start_video_thread<F, T>(
                             let record_permission = session.lc.read().unwrap().record_permission;
                             let id = session.lc.read().unwrap().id.clone();
                             if record_state && record_permission {
-                                handler.record_screen(true, id, display, is_view_camera);
+                                handler.record_screen(true, id, display, is_view_camera,
+                                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                                    recording.as_ref().map(|store| {let generation=store.lock().unwrap().generation;(store.clone(),generation)}),
+                                );
                             }
                             video_handler = Some(handler);
                         }
@@ -3021,10 +3066,20 @@ pub fn start_video_thread<F, T>(
                         *discard_queue.write().unwrap() = true;
                         applied.store(revision, std::sync::atomic::Ordering::Release);
                     }
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    MediaData::AutomationRecord(start,generation) => {
+                        let id=session.lc.read().unwrap().id.clone();
+                        if let Some(handler)=video_handler.as_mut() {
+                            handler.record_screen(start,id,display,is_view_camera,recording.as_ref().map(|store|(store.clone(),generation)));
+                        }
+                    }
                     MediaData::RecordScreen(start) => {
                         let id = session.lc.read().unwrap().id.clone();
                         if let Some(handler) = video_handler.as_mut() {
-                            handler.record_screen(start, id, display, is_view_camera);
+                            handler.record_screen(start, id, display, is_view_camera,
+                                #[cfg(all(feature = "automation", target_os = "macos"))]
+                                recording.as_ref().map(|store| {let generation=store.lock().unwrap().generation;(store.clone(),generation)}),
+                            );
                         }
                     }
                     _ => {}
@@ -3836,6 +3891,8 @@ pub enum Data {
     AutomationLogin(crate::automation::auth::Envelope),
     #[cfg(all(feature = "automation", target_os = "macos"))]
     AutomationDisconnect(crate::automation::control::Permit),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationRecord(crate::automation::recording::Envelope),
     Close,
     RejectInsecureConnection,
     Login((String, String, String, bool)),

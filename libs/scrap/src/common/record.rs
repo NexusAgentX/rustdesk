@@ -81,6 +81,7 @@ pub trait RecorderApi {
 
 #[derive(Debug)]
 pub enum RecordState {
+    Error(String),
     NewFile(String),
     NewFrame,
     WriteTail,
@@ -336,6 +337,8 @@ impl RecorderApi for WebmRecorder {
                 .add_frame(&frame.data, frame.pts as u64 * 1_000_000, frame.key);
             if ok {
                 self.written = true;
+            } else if let Some(tx)=&self.ctx.tx {
+                let _observer_closed=tx.send(RecordState::Error("Failed to write encoded video frame".into()));
             }
             ok
         } else {
@@ -346,7 +349,10 @@ impl RecorderApi for WebmRecorder {
 
 impl Drop for WebmRecorder {
     fn drop(&mut self) {
-        let _ = std::mem::replace(&mut self.webm, None).map_or(false, |webm| webm.finalize(None));
+        let finalized = std::mem::replace(&mut self.webm, None).map_or(false, |webm| webm.finalize(None));
+        if !finalized && self.written && self.start.elapsed().as_secs() >= MIN_SECS {
+            if let Some(tx)=&self.ctx.tx { let _observer_closed=tx.send(RecordState::Error("Failed to finalize WebM recording".into())); }
+        }
         let mut state = RecordState::WriteTail;
         if !self.written || self.start.elapsed().as_secs() < MIN_SECS {
             std::fs::remove_file(&self.ctx2.filename).ok();
@@ -399,6 +405,8 @@ impl RecorderApi for HwRecorder {
                 .unwrap_or_default();
             if ok {
                 self.written = true;
+            } else if let Some(tx)=&self.ctx.tx {
+                let _observer_closed=tx.send(RecordState::Error("Failed to write encoded video frame".into()));
             }
             ok
         } else {
@@ -410,7 +418,13 @@ impl RecorderApi for HwRecorder {
 #[cfg(feature = "hwcodec")]
 impl Drop for HwRecorder {
     fn drop(&mut self) {
-        self.muxer.as_mut().map(|m| m.write_tail().ok());
+        if let Some(muxer)=&mut self.muxer {
+            if let Err(error)=muxer.write_tail() {
+                if self.written && self.start.elapsed().as_secs() >= MIN_SECS {
+                    if let Some(tx)=&self.ctx.tx {let _observer_closed=tx.send(RecordState::Error(format!("Failed to finalize recording: {}",error)));}
+                }
+            }
+        }
         let mut state = RecordState::WriteTail;
         if !self.written || self.start.elapsed().as_secs() < MIN_SECS {
             // The process cannot access the file because it is being used by another process

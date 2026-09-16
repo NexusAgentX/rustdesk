@@ -87,6 +87,7 @@ pub struct SessionSnapshot {
 }
 
 struct State {
+    chat: super::chat::History,
     snapshot: SessionSnapshot,
     started: bool,
     capture_enabled: bool,
@@ -94,6 +95,7 @@ struct State {
 }
 
 struct Record {
+    recording: super::recording::Shared,
     control: Arc<super::control::Authority>,
     state: Mutex<State>,
     changes: watch::Sender<u64>,
@@ -111,8 +113,10 @@ impl SessionHandle {
         let (changes, _) = watch::channel(0);
         let (frames_changed, _) = watch::channel(0);
         Self(Arc::new(Record {
+            recording: Default::default(),
             control: Arc::new(super::control::Authority::new(session_id.clone())),
             state: Mutex::new(State {
+                chat: Default::default(),
                 snapshot: SessionSnapshot {
                     session_id,
                     peer_id,
@@ -179,6 +183,18 @@ impl SessionHandle {
         if state.snapshot.connection_epoch != epoch { return; }
         let observation = state.snapshot.security.observation_mut(kind);
         if observation.request_token == token { observation.pending = false; }
+        self.notify(&mut state);
+    }
+
+    pub(crate) fn recording(&self) -> super::recording::Shared { self.0.recording.clone() }
+
+    pub(crate) fn chat_read(&self, cursor: Option<&str>, limit: usize) -> super::error::Result<serde_json::Value> {
+        self.0.state.lock().unwrap().chat.read(cursor,limit)
+    }
+    pub(crate) fn chat_append(&self, epoch: u64, direction: &'static str, text: &str) {
+        let mut state=self.0.state.lock().unwrap();
+        if state.snapshot.connection_epoch!=epoch || !state.snapshot.authenticated { return; }
+        state.chat.append(epoch,direction,text);
         self.notify(&mut state);
     }
 
@@ -290,6 +306,7 @@ impl SessionHandle {
         }
         state.started = true;
         state.snapshot.connection_epoch = epoch;
+        self.recording().lock().unwrap().requested(false,epoch);
         state.snapshot.state = ConnectionState::Connecting;
         state.snapshot.authenticated = false;
         state.snapshot.auth_challenge = None;
@@ -321,6 +338,16 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
+    pub(crate) fn recording_requested(&self, enabled: bool) -> u64 {
+        self.session.recording().lock().unwrap().requested(enabled,self.epoch)
+    }
+    pub(crate) fn recording_failed(&self, error: String) {
+        self.update(|_| self.session.recording().lock().unwrap().fail(error));
+    }
+    pub(crate) fn chat_message(&self, direction: &'static str, text: &str) {
+        self.session.chat_append(self.epoch,direction,text);
+    }
+
     pub(crate) fn terminal(
         &self,
         mut response: hbb_common::message_proto::TerminalResponse,
@@ -439,7 +466,7 @@ impl Connection {
                     .permissions
                     .entry("keyboard".into())
                     .or_insert(true);
-                for permission in ["clipboard", "file", "restart", "block_input", "privacy_mode"] {
+                for permission in ["clipboard", "file", "restart", "block_input", "privacy_mode", "recording"] {
                     state.snapshot.permissions.entry(permission.into()).or_insert(true);
                 }
             }
@@ -553,6 +580,7 @@ impl Connection {
     }
 
     pub(crate) fn disconnected(&self) {
+        self.session.recording().lock().unwrap().disconnected(self.epoch);
         self.update(|state| {
             super::files::disconnected(&state.snapshot.session_id, self.epoch);
             super::terminals::disconnected(

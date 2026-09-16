@@ -45,6 +45,7 @@ pub fn run(rx: Receiver<RecordState>) {
         loop {
             if let Err(e) = match rx.recv() {
                 Ok(state) => match state {
+                    RecordState::Error(error) => Err(hbb_common::anyhow::anyhow!("Recorder failed: {}",error)),
                     RecordState::NewFile(filepath) => uploader.handle_new_file(filepath),
                     RecordState::NewFrame => {
                         if uploader.running {

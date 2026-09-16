@@ -194,3 +194,8 @@ params!(ViewSet {session_ref:String,operation_id:Option<String>,ui_session_id:Op
 params!(ViewWindow {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,action:crate::automation::views::WindowAction,wait_ms:Option<u64>});
 
 params!(ConnectionSet {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,change:crate::automation::views::ConnectionSetting,wait_ms:Option<u64>});
+
+params!(ChatSend { session_ref:String, text:String, operation_id:Option<String> });
+params!(ChatRead { session_ref:String, cursor:Option<String>, max_messages:Option<usize>, wait_ms:Option<u64> });
+
+params!(RecordingSet { session_ref:String, enabled:bool, wait_ms:Option<u64>, operation_id:Option<String> });

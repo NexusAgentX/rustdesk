@@ -108,6 +108,10 @@ pub fn definitions() -> Vec<Tool> {
     definition::<Write>("rd_control_release","Voluntarily return control to the human, invalidate queued AI input and release held keys and buttons. Keep the binding for reading.",false),
     definition::<Capture>("rd_screen_capture","Return a native PNG. source=decoded (default) reads decoded pixels with snapshot_id for input and supports max_width/max_height/after_frame_seq; available under human control. source=remote_original requests the stock toolbar original PNG from peer >=1.4.0, requires AI control, omits resizing/frame cursor and returns no input snapshot_id. wait_ms is a maximum wait, default 0 decoded or 10000 original; original timeout does not undo sending. Optional save_path writes exactly the returned PNG to a new absolute local .png file under AI control; parent must exist and existing targets are never overwritten. Use operation_id for save/request retries. PNG limit 8 MiB.",false),
     definition::<Read>("rd_security_get","Read peer-reported blocking/privacy/elevation state, pending outcomes, SAS support, privacy implementations and permissions. Unknown is not off; fresh=false after disconnect. No GUI optimistic values. Headless OS-login challenges use existing session_authenticate with credentials.kind=os_login. No credentials are returned.",true),
+    definition::<Read>("rd_recording_get","Read stock video-only session recording state and the last 64 output-file records in controller memory. Reports per-file writing/finalized/discarded/failed state, path, display, frames and final byte length. Files persist on the controller; history is per visible core session. Shorter-than-one-second or empty recordings are discarded by stock RustDesk. Codec/resolution changes can split files. Query after stop to verify finalization; capture/send are not recording evidence.",true),
+    definition::<RecordingSet>("rd_recording_set","Explicitly start/stop stock desktop video recording under AI control. Start requires remote recording permission; stop remains available if permission is revoked. Uses the existing controller video directory and current video streams, with normal local/remote recording indicators. No audio. Start requests a keyframe; confirmed start requires an observed recorded frame, confirmed stop waits for active writers to finish. wait_ms 0..30000 default 10000; timeout does not cancel recording. Recording survives control handover and ends on explicit stop, permission revocation or connection end. Use operation_id for dedupe.",false),
+    definition::<ChatSend>("rd_chat_send","Send 1..16384 UTF-8 bytes through stock desktop text chat. Requires ready desktop and AI control, but not keyboard permission. Sent does not mean delivered/read; no peer acknowledgement exists. Outgoing and incoming messages are retained in a bounded controller-memory history, distinct from the clipboard. Use operation_id to prevent duplicate sends.",false),
+    definition::<ChatRead>("rd_chat_read","Read stock desktop chat history, retained for this visible core session across reconnects, with connection_epoch on each entry. Includes observed incoming and successfully sent GUI/MCP outgoing messages only. max_messages 1..100 (default 50), wait_ms 0..30000 (default 0). next_cursor resumes reads; gap reports eviction; wrong-history/future cursors fail. Limits: 256 messages / 256 KiB total, 16 KiB per message; oversized incoming messages are truncated with a flag. Does not load prior GUI history or persist messages. Human control can read; disconnected reads return cached data immediately.",true),
     definition::<InputBlock>("rd_input_block_set","Explicitly block/unblock local input on stock Windows. Enabling requires keyboard and block_input permission; disabling may still be attempted for recovery after permission revocation, but the peer can deny it. wait_ms 0..30000, default 10000; stock peers report failures only, so silence remains unknown and the request lock is released after the observation window; no success acknowledgement is promised. Privacy/elevation have separate acknowledgement semantics. Returning AI control attempts an unblock; query security_get to verify. Requires AI control.",false),
     definition::<PrivacySet>("rd_privacy_set","Enable/disable stock privacy mode. Enabling requires an implementation from security_get, peer feature/keyboard/privacy permissions and toolbar display constraints. May change remote display topology. Disable may omit implementation to use observed active implementation or stock default. wait_ms 0..30000 default 10000. AI control release attempts to turn off AI-requested privacy, without promising remote success. Read peer state after release/disconnection. Never grants remote permissions.",false),
     definition::<Elevate>("rd_session_elevate","Request stock Windows portable elevation using mode=direct (may require local UAC consent) or mode=logon with explicit OS credentials. Single-use values are not saved or returned. Requires keyboard permission and peer that is not installed/already elevated. Empty elevation reply means awaiting service, not success; only portable_service_running=true confirms service startup. wait_ms 0..30000 default 10000; GUI consent is not bypassed.",false),
@@ -705,6 +709,25 @@ pub(super) async fn dispatch(
                 json!({"approval":session.control().cancel_approval(&permit,&p.approval_id)?}),
             ))
         }
+        "rd_recording_get" => {
+            let p:Read=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::recording::get(&permit)?))
+        }
+        "rd_recording_set" => {
+            let p:RecordingSet=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            let value=crate::automation::recording::set(permit,p.enabled,wait(p.wait_ms,10000)?).await?;
+            if !value["state"]["state"]["error"].is_null() {
+                let mut reply=Reply::error(BridgeError::new("RECORDING_FAILED","Stock recorder reported an error; inspect recording state and files"));reply.value["data"]=value;Ok(reply)
+            } else {let confirmed=value["confirmed"]==true;Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))}
+        }
+        "rd_chat_send" => {
+            let p:ChatSend=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            Ok(Reply::success(crate::automation::chat::send(permit,p.text).await?))
+        }
+        "rd_chat_read" => {
+            let p:ChatRead=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::chat::read(permit,p.cursor,p.max_messages.unwrap_or(50),wait(p.wait_ms,0)?).await?))
+        }
         "rd_security_get" => {
             let p:Read=parse(args)?; let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
             Ok(Reply::success(crate::automation::security::get(&permit)?))
@@ -1120,6 +1143,10 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         }};
     }
     match name {
+        "rd_recording_get" => shape!(Read),
+        "rd_recording_set" => shape!(RecordingSet),
+        "rd_chat_send" => shape!(ChatSend),
+        "rd_chat_read" => shape!(ChatRead),
         "rd_displays_get" => shape!(Read),
         "rd_display_modes_get" => shape!(DisplayModes),
         "rd_connection_settings_get" => shape!(ViewGet),
@@ -1213,6 +1240,10 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
+        "rd_recording_get" => &[("state","object"),("scope","string"),("storage","string"),("connected","boolean"),("permission","boolean|null"),("output_directory","string"),("limits","string"),("lifecycle","string")],
+        "rd_recording_set" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("requested_enabled","boolean"),("state","object")],
+        "rd_chat_send" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("hint","string")],
+        "rd_chat_read" => &[("messages","array"),("next_cursor","string"),("gap","boolean"),("has_more","boolean"),("scope","string"),("connected","boolean"),("connection_epoch","string"),("storage","string"),("retained_messages","integer"),("max_retained_messages","integer"),("max_retained_bytes","integer")],
         "rd_security_get" => &[("state","object"),("fresh","boolean"),("scope","string"),("connection_epoch","string"),("privacy_implementations","array"),("installed","boolean|null"),("headless","boolean|null"),("permissions","object"),("auth_challenge","object|null"),("headless_login_tool","string"),("observation","string"),("cleanup","string")],
         "rd_input_block_set" | "rd_privacy_set" | "rd_session_elevate" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("requested_enabled","boolean"),("state","object"),("outcome","string|null")],
         "rd_ctrl_alt_del" | "rd_os_password_input" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("hint","string")],

@@ -672,7 +672,17 @@ impl<T: InvokeUiSession> Remote<T> {
                     },
                     _ => {}
                 }
-                allow_err!(peer.send(&msg).await);
+                match peer.send(&msg).await {
+                    Ok(()) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(message::Union::Misc(misc))=&msg.union {
+                            if let Some(misc::Union::ChatMessage(chat))=&misc.union {
+                                if let Some(observer)=&self.automation { observer.chat_message("outgoing",&chat.text); }
+                            }
+                        }
+                    }
+                    Err(error)=>log::error!("Send session message failed: {}",error),
+                }
             }
             Data::SendFiles((id, r#type, path, to, file_num, include_hidden, is_remote)) => {
                 log::info!("send files, is remote {}", is_remote);
@@ -1026,6 +1036,19 @@ impl<T: InvokeUiSession> Remote<T> {
                         .err()
                         .map(|e| e.to_string());
                     self.handle_job_status(id, -1, err);
+                }
+            }
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::AutomationRecord(request) => {
+                match request.check() {
+                    Err(error)=>request.complete(Err(error)),
+                    Ok(())=>{
+                        self.handler.lc.write().unwrap().record_state=request.enabled;
+                        self.update_record_state();
+                        let generation=self.automation.as_ref().map(|observer|observer.recording_requested(request.enabled)).unwrap_or(0);
+                        request.complete(Ok(generation));
+                        if request.enabled { allow_err!(peer.send(&crate::client::LoginConfigHandler::refresh()).await); }
+                    }
                 }
             }
             Data::RecordScreen(start) => {
@@ -1900,6 +1923,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         self.audio_sender.send(MediaData::AudioFormat(f)).ok();
                     }
                     Some(misc::Union::ChatMessage(c)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer)=&self.automation { observer.chat_message("incoming",&c.text); }
                         self.handler.new_message(c.text);
                     }
                     Some(misc::Union::PermissionInfo(p)) => {
@@ -2664,8 +2689,18 @@ impl<T: InvokeUiSession> Remote<T> {
         self.last_record_state = start;
         log::info!("record screen start: {start}");
         // update local
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let record_generation=self.automation.as_ref().map(|observer|observer.recording_requested(start));
         for (_, v) in self.video_threads.iter_mut() {
-            v.video_sender.send(MediaData::RecordScreen(start)).ok();
+            #[allow(unused_mut)]
+            let mut message=MediaData::RecordScreen(start);
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            if let Some(generation)=record_generation {message=MediaData::AutomationRecord(start,generation);}
+            if let Err(error)=v.video_sender.send(message) {
+                log::warn!("Recorder command could not reach decoder: {}",error);
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(observer)=&self.automation {observer.recording_failed("Recorder command could not reach decoder".into());}
+            }
         }
         self.handler.update_record_status(start);
         // update remote

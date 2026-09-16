@@ -245,6 +245,7 @@ impl WireState {
                 if matches!(envelope.message.union, Some(message::Union::Cliprdr(_))) { super::file_clipboard::check(&envelope.permit, true)?; }
                 if let Some(message::Union::Misc(misc)) = &envelope.message.union {
                     match &misc.union {
+                        Some(hbb_common::message_proto::misc::Union::ChatMessage(_)) => { super::chat::check(&envelope.permit,true)?; },
                         Some(hbb_common::message_proto::misc::Union::ElevationRequest(_)) => super::security::elevation_check(&envelope.permit)?,
                         Some(hbb_common::message_proto::misc::Union::TogglePrivacyMode(t)) => super::security::privacy_check(&envelope.permit,t.on,&t.impl_key)?,
                         Some(hbb_common::message_proto::misc::Union::Option(o)) if o.block_input.value()!=0 => super::security::block_check(&envelope.permit,o.block_input==hbb_common::message_proto::option_message::BoolOption::Yes.into())?,
@@ -329,7 +330,17 @@ impl WireState {
                         }
                     }
                 }
-                peer.send(&envelope.message).await.map(|_| 1).map_err(|_| {
+                let result=peer.send(&envelope.message).await;
+                if result.is_ok() {
+                    if let Some(message::Union::Misc(misc))=&envelope.message.union {
+                        if let Some(hbb_common::message_proto::misc::Union::ChatMessage(chat))=&misc.union {
+                            if let Some(session)=sessions::get(&envelope.permit.authority.session_id) {
+                                session.chat_append(envelope.permit.epoch,"outgoing",&chat.text);
+                            }
+                        }
+                    }
+                }
+                result.map(|_| 1).map_err(|_| {
                     BridgeError::new("DELIVERY_UNKNOWN", "Remote transport failed during send")
                 })
             }
