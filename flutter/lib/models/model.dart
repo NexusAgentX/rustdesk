@@ -332,6 +332,8 @@ class FfiModel with ChangeNotifier {
   }
 
   // todo: why called by two position
+  Future<void> Function(String)? automationViewHandler;
+
   StreamEventHandler startEventListener(SessionID sessionId, String peerId) {
     return (evt) async {
       var name = evt['name'];
@@ -351,6 +353,8 @@ class FfiModel with ChangeNotifier {
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
+      } else if (name == 'automation_view') {
+        await automationViewHandler?.call(evt['request_id'] ?? '');
       } else if (name == 'automation_display_select') {
         final selected = bind.automationDisplayApply(
             requestId: evt['request_id'] ?? '', sessionId: sessionId);

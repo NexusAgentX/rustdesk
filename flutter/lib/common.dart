@@ -3424,13 +3424,15 @@ openMonitorInTheSameTab(int i, FFI ffi, PeerInfo pi,
 // For now just open new window.
 //
 // screenRect is used to move the new window to the specified screen and set fullscreen.
-openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
-    {Rect? screenRect}) {
+Future<void> openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
+    {Rect? screenRect, String? automationRequestId, SessionID? automationSource}) async {
   final args = {
     'window_id': stateGlobal.windowId,
     'peer_id': peerId,
     'display': i,
     'display_count': pi.displays.length,
+    if (automationRequestId != null) 'automation_view_request': automationRequestId,
+    if (automationSource != null) 'automation_source': automationSource.toString(),
     'window_type': (kWindowType ?? WindowType.RemoteDesktop).index,
   };
   if (screenRect != null) {
@@ -3441,7 +3443,7 @@ openMonitorInNewTabOrWindow(int i, String peerId, PeerInfo pi,
       'b': screenRect.bottom,
     };
   }
-  DesktopMultiWindow.invokeMethod(
+  await DesktopMultiWindow.invokeMethod(
       kMainWindowId, kWindowEventOpenMonitorSession, jsonEncode(args));
 }
 

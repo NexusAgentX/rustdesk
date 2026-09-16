@@ -1,3 +1,4 @@
+import '../widgets/automation_view.dart';
 import '../widgets/automation_banner.dart';
 import 'dart:async';
 
@@ -126,6 +127,8 @@ class _RemotePageState extends State<RemotePage>
     super.initState();
     _ffi = FFI(widget.sessionId);
     Get.put<FFI>(_ffi, tag: widget.id);
+    _ffi.ffiModel.automationViewHandler = AutomationView(_ffi, widget.toolbarState,
+        () => mounted, () => closeConnection(id: widget.id)).handle;
     _ffi.imageModel.addCallbackOnFirstImage((String peerId) {
       _ffi.canvasModel.activateLocalCursor();
       showKBLayoutTypeChooserIfNeeded(
@@ -370,6 +373,7 @@ class _RemotePageState extends State<RemotePage>
     _waylandKeyboardModeWorker?.dispose();
     // Clear callback reference to prevent memory leaks and stale references
     _ffi.inputModel.onRelativeMouseModeDisabled = null;
+    _ffi.ffiModel.automationViewHandler = null;
     // Relative mouse mode cleanup is centralized in FFI.close(closeSession: ...).
     _ffi.textureModel.onRemotePageDispose(closeSession);
     if (closeSession) {

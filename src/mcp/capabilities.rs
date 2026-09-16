@@ -67,6 +67,8 @@ pub(super) fn view(session: &SessionHandle) -> Value {
         "capabilities":{
             "session_read":cap(Some(true),Some(true),false,false,&["rd_session_get","rd_capabilities_get"]),
             "session_lifecycle":cap(Some(true),Some(true),true,false,&["rd_session_disconnect","rd_session_reconnect","rd_session_close"]),
+            "local_view_read":cap(Some(desktop),Some(true),false,false,&["rd_view_settings_get"]),
+            "local_view_write":cap(Some(desktop),Some(true),true,true,&["rd_view_settings_set","rd_view_window"]),
             "display_read":cap(Some(desktop),Some(true),false,false,&["rd_displays_get","rd_display_modes_get"]),
             "display_select":cap(Some(desktop && s.peer_version.as_deref().is_some_and(crate::common::is_support_multi_ui_session)),Some(true),true,true,&["rd_display_select"]),
             "display_resolution":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_display_resolution_set"]),

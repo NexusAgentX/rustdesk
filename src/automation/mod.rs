@@ -21,3 +21,5 @@ pub mod text_clipboard;
 pub mod file_clipboard;
 
 pub mod displays;
+
+pub mod views;

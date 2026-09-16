@@ -834,6 +834,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         }
       } else if (call.method == kWindowEventOpenMonitorSession) {
         final args = jsonDecode(call.arguments);
+        if (args['automation_view_request'] != null &&
+            !bind.automationViewGuard(requestId: args['automation_view_request'],
+                sessionId: SessionID(args['automation_source']))) {
+          throw PlatformException(code: 'CONTROL_EXPIRED', message: 'Monitor-window request expired');
+        }
         final windowId = args['window_id'] as int;
         final peerId = args['peer_id'] as String;
         final display = args['display'] as int;

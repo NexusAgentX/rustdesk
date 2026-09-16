@@ -66,6 +66,9 @@ pub fn definitions() -> Vec<Tool> {
     vec![
     definition::<Read>("rd_displays_get","Read remote display topology, original dimensions, known modes, AI capture selection, local view selection and stock virtual-display support. Display IDs are valid only for the reported layout_revision; driver_installed is unknown because the stock protocol does not report it.",true),
     definition::<DisplayModes>("rd_display_modes_get","Read cached supported modes for one online display without changing it. If known=false, switch from another display to this display with target=local_view; the stock peer reports modes only when the selected display changes. Reconnect if no other display exists. Current geometry is in capture pixels; modes are the stock OS resolution values and scale is reported separately.",true),
+    definition::<ViewGet>("rd_view_settings_get","Read actual settings and local-window state from one desktop GUI view, including local screens, scaling, cursor preferences, toolbar pin and fullscreen. Multiple views require ui_session_id from displays_get. Does not change remote resolution or MCP image size.",true),
+    definition::<ViewSet>("rd_view_settings_set","Set one explicit local-view setting under AI control. Scaling/cursor/display-window preferences persist per peer; use_all_local_displays applies on the next fresh connection; individual_windows changes subsequent toolbar selections without creating/closing windows. follow_ai_display and toolbar pin persist globally; fullscreen affects the whole local OS window, including other tabs. Custom scale percent 5..1000. Read back settings and effective/support fields.",false),
+    definition::<ViewWindow>("rd_view_window","Show the target local OS window, close only its desktop view, or open_display using the stock monitor-window path (may reuse an existing tab/window). Closing the last view disconnects the logical session; session_close instead closes every view. Show/fullscreen affect the OS window shared by tabs. Window open/close returns sent with unknown completion; use displays_get to observe topology. Requires AI control.",false),
     definition::<DisplaySelect>("rd_display_select","Select numeric display_id or all for target=capture (this binding's AI capture subscription) or local_view (one GUI window). Effective capture is the union of AI and GUI needs; subsequent screen_capture calls add their requested display. With multiple GUI views specify ui_session_id from displays_get. Local viewing is independent of the follow-AI preference. Selection invalidates old screenshot coordinates. wait_ms observes local GUI application, minimum 1000/default 10000; capture has no remote acknowledgement. Selecting one local display requests its supported modes without applying saved resolution preferences.",false),
     definition::<DisplayResolutionSet>("rd_display_resolution_set","Request mode=set with width/height, restore_original, or fit_local (exact local main-display size). Setting physical screens requires a reported supported mode; restore_original uses the original resolution reported by the peer even when the mode cache is unknown; custom sizes require a virtual display reported with original 0x0. Requires keyboard permission and AI control. This changes the remote machine's display; wait_ms default 10000 observes geometry, with confirmed=false meaning unknown outcome. Does not save a new peer resolution preference.",false),
     definition::<VirtualDisplaySet>("rd_virtual_display_set","Add, remove, or remove_all stock Windows virtual displays. Requires installed peer reporting an IDD implementation, keyboard permission, AI control and privacy mode off. Adding MAY INSTALL A DRIVER through the stock peer. RustDesk IDD add/remove requires index 1..4; Amyuni adds/removes one and requires index omitted; remove_all always omits index. wait_ms default 10000 observes reported counts/indices; false confirmation is unknown outcome, not proof of failure.",false),
@@ -163,6 +166,18 @@ pub(super) async fn dispatch(
 ) -> Result<Reply> {
     let agent = &client.agent;
     match name {
+        "rd_view_settings_get" | "rd_view_settings_set" | "rd_view_window" => {
+            use crate::automation::views::{self, Command};
+            let (reference, view, command, ms) = match name {
+                "rd_view_settings_get" => {let p:ViewGet=parse(args)?;(p.session_ref,p.ui_session_id,Command::Get,p.wait_ms)},
+                "rd_view_settings_set" => {let p:ViewSet=parse(args)?;(p.session_ref,p.ui_session_id,Command::Set{change:p.change},p.wait_ms)},
+                _ => {let p:ViewWindow=parse(args)?;(p.session_ref,p.ui_session_id,Command::Window{action:p.action},p.wait_ms)},
+            };
+            let (_,permit)=api::resolve(agent,&reference,name!="rd_view_settings_get")?;
+            let value=views::request(permit,view,command,wait(ms,10000)?).await?;
+            let confirmed=value["confirmed"]==true;
+            Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))
+        }
         "rd_displays_get" => {
             let p:Read=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
             Ok(Reply::success(crate::automation::displays::get(&permit)?))
@@ -1030,6 +1045,9 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
     match name {
         "rd_displays_get" => shape!(Read),
         "rd_display_modes_get" => shape!(DisplayModes),
+        "rd_view_settings_get" => shape!(ViewGet),
+        "rd_view_settings_set" => shape!(ViewSet),
+        "rd_view_window" => shape!(ViewWindow),
         "rd_display_select" => shape!(DisplaySelect),
         "rd_display_resolution_set" => shape!(DisplayResolutionSet),
         "rd_virtual_display_set" => shape!(VirtualDisplaySet),
@@ -1109,6 +1127,7 @@ fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
         "rd_displays_get" => &[("displays","array"),("local_views","array"),("capture_selection","object"),("virtual_displays","object"),("layout_revision","string"),("remote_current_display","string")],
         "rd_display_modes_get" => &[("display_id","string"),("known","boolean"),("modes","array|null"),("current","object"),("original","object|null"),("custom_supported","boolean"),("unknown_hint","string")],
+        "rd_view_settings_get" | "rd_view_settings_set" | "rd_view_window" => &[("confirmed","boolean"),("delivery","string"),("state","object"),("scope","string"),("ui_session_id","string"),("request_id","string"),("hint","string")],
         "rd_display_select" | "rd_display_resolution_set" | "rd_virtual_display_set" => &[("delivery","string"),("confirmed","boolean"),("state","object"),("requested","object"),("scope","string"),("driver_installation_may_occur","boolean")],
         "rd_file_clipboard_cancel" => &[("job_id","string"),("delivery","string"),("partial_files_may_remain","boolean")],
         "rd_file_clipboard_copy" => &[("delivery","string"),("clipboard_scope","string"),("remote_delivery","string"),("application_result","string")],

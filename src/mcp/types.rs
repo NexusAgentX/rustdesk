@@ -169,3 +169,7 @@ params!(DisplayModes {session_ref:String, display_id:String});
 params!(DisplaySelect {session_ref:String,operation_id:Option<String>,display_id:String,target:crate::automation::displays::SelectionTarget,ui_session_id:Option<String>,wait_ms:Option<u64>});
 params!(DisplayResolutionSet {session_ref:String,operation_id:Option<String>,display_id:String,mode:crate::automation::displays::ResolutionMode,width:Option<i32>,height:Option<i32>,wait_ms:Option<u64>});
 params!(VirtualDisplaySet {session_ref:String,operation_id:Option<String>,action:crate::automation::displays::VirtualAction,index:Option<i32>,wait_ms:Option<u64>});
+
+params!(ViewGet {session_ref:String,ui_session_id:Option<String>,wait_ms:Option<u64>});
+params!(ViewSet {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,change:crate::automation::views::Setting,wait_ms:Option<u64>});
+params!(ViewWindow {session_ref:String,operation_id:Option<String>,ui_session_id:Option<String>,action:crate::automation::views::WindowAction,wait_ms:Option<u64>});

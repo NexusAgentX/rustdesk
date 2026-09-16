@@ -3259,3 +3259,25 @@ pub fn automation_display_apply(request_id: String, session_id: SessionID) -> Sy
     #[cfg(not(all(feature = "automation", target_os = "macos")))]
     SyncReturn(String::new())
 }
+
+/// Claim a typed local-view request in the destination Flutter engine.
+pub fn automation_view_claim(request_id: String, session_id: SessionID) -> SyncReturn<String> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(match crate::automation::views::claim(&request_id, session_id) {
+        Ok(v) => v.to_string(), Err(e) => serde_json::json!({"error":e}).to_string(),
+    });
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    SyncReturn(String::new())
+}
+pub fn automation_view_guard(request_id: String, session_id: SessionID) -> SyncReturn<bool> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(crate::automation::views::guard(&request_id, session_id).is_ok());
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    SyncReturn(false)
+}
+pub fn automation_view_complete(request_id: String, session_id: SessionID, result: String) -> SyncReturn<bool> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(crate::automation::views::complete(&request_id, session_id, &result));
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    SyncReturn(false)
+}
