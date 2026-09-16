@@ -66,6 +66,6 @@ This is a proposed integration sequence for the existing 67-tool implementation.
 
 ## Questions for maintainers
 
-1. Is an optional embedded MCP service a direction you would consider, or would you prefer a separate integration with a narrower client API?
-2. Would an experimental macOS-first increment with the scope above be useful?
-3. What SDK, Rust toolchain and CI constraints should an upstream implementation follow?
+1. Would you be open to upstreaming this optional, controller-side MCP integration? Are there any blocking concerns with the embedded local-service architecture or control model?
+2. Would the proposed incremental contribution plan be acceptable, starting with an opt-in, macOS-first read-only foundation, followed by desktop input and human takeover?
+3. Given the SDK/toolchain gap described above, could a Rust toolchain update be considered, or should the integration target the existing toolchain? Are there additional dependency or CI requirements to account for?
