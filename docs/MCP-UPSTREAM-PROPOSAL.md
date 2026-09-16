@@ -26,7 +26,7 @@ The [evaluation guide and test records](https://github.com/NexusAgentX/rustdesk/
 
 If this direction is welcome, I would like to adapt the implementation to current master and prepare an upstream PR promptly. I can work with maintainers on the scope and split the changes as needed for review.
 
-The main build constraint is the SDK's [Rust 1.88 minimum](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml) versus [Rust 1.81 in the checked upstream macOS workflow](https://github.com/rustdesk/rustdesk/blob/0ac2e7fb5269b9dbdab85f7213b30d76ba2d49f9/.github/workflows/flutter-build.yml). Porting also needs to account for the move to `libs/base`.
+The current implementation uses the Rust MCP SDK (`rmcp` 3.3.0), which [requires Rust 1.88 or later](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml), while the [checked upstream macOS workflow](https://github.com/rustdesk/rustdesk/blob/0ac2e7fb5269b9dbdab85f7213b30d76ba2d49f9/.github/workflows/flutter-build.yml) uses Rust 1.81. Porting also needs to account for the move to `libs/base`.
 
 1. Is this integration of interest, and are there blocking concerns with the local-service architecture or control policy?
 2. Could a Rust toolchain update be considered, or should the integration target the existing toolchain?
