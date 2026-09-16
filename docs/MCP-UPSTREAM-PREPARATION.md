@@ -109,7 +109,7 @@ The expected app is `flutter/build/macos/Build/Products/Release/RustDesk.app`. A
 
 ## Upstream interest and next step
 
-The [maintainer response](https://github.com/rustdesk/rustdesk/discussions/16246#discussioncomment-18467383) on 2026-09-16 invited the contribution to proceed and noted that Rust 1.75 is retained for Windows 7 users. A [follow-up reply](https://github.com/rustdesk/rustdesk/discussions/16246#discussioncomment-18467577) asks whether to contribute one PR or several smaller PRs, and whether contributor test results should be supplemented by installable builds for maintainer/community testing before merging, including expected platform and feature coverage. PR organization and validation expectations are awaiting clarification; how the toolchain constraint applies to optional MCP builds also remains unresolved.
+The [maintainer response](https://github.com/rustdesk/rustdesk/discussions/16246#discussioncomment-18467383) on 2026-09-16 invited the contribution to proceed and noted that Rust 1.75 is retained for Windows 7 users. In the [follow-up decision](https://github.com/rustdesk/rustdesk/discussions/16246#discussioncomment-18467622), the maintainer requested a single PR first, with splitting considered later if needed, and deferred additional testing requirements until seeing the PR. We [acknowledged the next step](https://github.com/rustdesk/rustdesk/discussions/16246#discussioncomment-18467722) and marked the initial maintainer response as the answer while keeping the discussion open. How the toolchain constraint applies to optional MCP builds remains unresolved.
 
 - [x] Review the proposal text with the project owner.
 - [x] Verify the pinned source, release tag, implementation scale, and 67 registered tools.
@@ -120,6 +120,9 @@ The [maintainer response](https://github.com/rustdesk/rustdesk/discussions/16246
 - [x] Publish the proposal in Feature Request: [discussion #16246](https://github.com/rustdesk/rustdesk/discussions/16246), posted on 2026-09-16. The published title and body were read back and verified against the reviewed proposal.
 - [x] Review the initial maintainer response: proceed with the contribution while accounting for the Rust 1.75/Windows 7 constraint.
 - [x] Ask about PR organization and maintainer/community testing expectations.
-- [ ] Agree on contribution scope, validation coverage, and the toolchain approach.
+- [x] Confirm the contribution format: one PR first, with splitting considered later if needed.
+- [x] Acknowledge the next step and mark the initial maintainer response as the answer, keeping the discussion open.
+- [ ] Prepare a single PR against current master, accounting for the existing toolchain constraints and documenting test results, validated platforms, and known limitations.
+- [ ] Agree on additional testing or evaluation builds after the maintainer reviews the PR.
 
-A video, additional internal live testing, or a standalone reproduction script can supplement later discussion if useful. They do not block the initial proposal or packaged evaluation. The maintainer has invited the contribution; next steps are to clarify PR organization and testing expectations, resolve the toolchain constraint, and prepare the upstream adaptation.
+A video, additional internal live testing, or a standalone reproduction script can supplement later discussion if useful. They do not block the initial proposal or packaged evaluation. The next step is to resolve the toolchain approach and prepare the upstream adaptation as a single PR; further testing expectations will follow maintainer review.
