@@ -1,6 +1,6 @@
 # Preparing the MCP upstream proposal
 
-Updated: 2026-09-16. The [proposal text](MCP-UPSTREAM-PROPOSAL.md) has been reviewed by the project owner. The evaluation entry point is the released desktop app, connected to the evaluator's own MCP agent and devices. A video or separate reproduction script is optional supplementary material, not a prerequisite for the initial discussion.
+Updated: 2026-09-16. The reviewed [proposal text](MCP-UPSTREAM-PROPOSAL.md) was published in upstream's Feature Request category as [discussion #16246](https://github.com/rustdesk/rustdesk/discussions/16246). The evaluation entry point is the released desktop app, connected to the evaluator's own MCP agent and devices. A video or separate reproduction script is optional supplementary material, not a prerequisite for the initial discussion.
 
 ## Maintainer evaluation
 
@@ -117,6 +117,7 @@ The discussion presents the released 67-tool implementation and its approximatel
 - [x] Verify the downloaded package and its correspondence with the installed application binaries.
 - [x] Rerun 74 automation tests and 12 MCP tests successfully.
 - [x] Document package installation and connection to the evaluator's own agent and devices.
-- [ ] Publish the proposal in [Feature Request](https://github.com/rustdesk/rustdesk/discussions/categories/feature-request) and follow up on maintainer feedback.
+- [x] Publish the proposal in Feature Request: [discussion #16246](https://github.com/rustdesk/rustdesk/discussions/16246), posted on 2026-09-16. The published title and body were read back and verified against the reviewed proposal.
+- [ ] Review maintainer feedback and agree on the upstream direction and constraints.
 
-A video, additional internal live testing, or a standalone reproduction script can supplement later discussion if useful. They do not block the initial proposal or packaged evaluation. The next external step is the Feature Request discussion; a full port to current master and PR breakdown follow direction feedback.
+A video, additional internal live testing, or a standalone reproduction script can supplement later discussion if useful. They do not block the initial proposal or packaged evaluation. The proposal is published and awaiting maintainer feedback; a full port to current master and any PR breakdown follow direction feedback.
