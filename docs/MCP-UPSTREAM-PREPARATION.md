@@ -43,7 +43,7 @@ Feedback should identify the controller platform, agent client, remote RustDesk 
 | Evaluation commit | `a0df1515f706d97a06f59ae7cf0c26410f7e7e76` |
 | Upstream base | RustDesk 1.4.9, `6c578292e8ebbbec708b76986ba8c4bc7c509747` |
 | Implementation scale | At the evaluation commit, 128 files changed: 19,606 insertions and 75 deletions relative to the upstream base; includes implementation, tests, Flutter integration, localization, documentation, and build/dependency changes |
-| Implemented tools | 67 unique tools registered in `src/mcp/tools.rs`; the proposal includes their complete capability breakdown |
+| Implemented tools | 67 unique tools registered in the [released tool catalog](https://github.com/NexusAgentX/rustdesk/blob/a0df1515f706d97a06f59ae7cf0c26410f7e7e76/src/mcp/tools.rs) |
 | Release tag | `mcp-v0.1.9`; the annotated tag was dereferenced through the GitHub API and confirmed to point to the evaluation commit |
 | Evaluation build | [MCP v0.1.9](https://github.com/NexusAgentX/rustdesk/releases/tag/mcp-v0.1.9) |
 | Published assets | `RustDesk-macOS-arm64-mcp-v0.1.9.zip`, `SHA256SUMS.txt` |
@@ -64,7 +64,7 @@ These checks verify package integrity, correspondence with the installed binarie
 
 | Behavior or claim | Evidence | Status |
 | --- | --- | --- |
-| Existing implementation scale and all 67 tools | Diff between the pinned base and evaluation commit; registrations in [`src/mcp/tools.rs`](https://github.com/NexusAgentX/rustdesk/blob/a0df1515f706d97a06f59ae7cf0c26410f7e7e76/src/mcp/tools.rs) | Verified; complete capability breakdown included in the proposal |
+| Existing implementation scale and all 67 tools | Diff between the pinned base and evaluation commit; registrations in [`src/mcp/tools.rs`](https://github.com/NexusAgentX/rustdesk/blob/a0df1515f706d97a06f59ae7cf0c26410f7e7e76/src/mcp/tools.rs) | Verified against the released tool catalog |
 | Packaged app ready for evaluator-owned agent setup | Release download and package checks above; **Copy AI connection configuration** in the app | Package and configuration entry point verified |
 | Stock Windows peer, visible desktop, capture, and exact text input | [Baseline live record](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) and [final-version regression](MCP-TUNNELS-TERMINAL.md#validation) | Historical live-test evidence |
 | Approval request, human takeover, queue cancellation, and held-key release | [Baseline live record](MACOS-ARM64-BUILD.md#mcp-live-integration-record-2026-09-15) | Historical live-test evidence |
@@ -107,9 +107,9 @@ The expected app is `flutter/build/macos/Build/Products/Release/RustDesk.app`. A
 )
 ```
 
-## Contribution sequence and next step
+## Upstream interest and next step
 
-The discussion presents the released 67-tool implementation and its approximately 20,000 added lines, links the ready-to-use package, and seeks feedback on architecture, contribution order, and build constraints. A first PR containing only read-only sessions and capture would extract a reviewable increment from the existing implementation; maintainers help choose the final scope and order of later contributions.
+The discussion presents the released 67-tool implementation and its approximately 20,000 added lines, links the ready-to-use package, and asks whether this direction is welcome upstream and whether there are blocking architectural, control-policy, or build constraints. If there is interest, the next step is to adapt the implementation to current master and prepare a PR promptly. The review scope and any splitting can be agreed with maintainers; no first-PR feature set or contribution sequence is committed in the proposal.
 
 - [x] Review the proposal text with the project owner.
 - [x] Verify the pinned source, release tag, implementation scale, and 67 registered tools.
