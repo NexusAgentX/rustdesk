@@ -1,3 +1,4 @@
+import '../widgets/automation_banner.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -59,6 +60,7 @@ class FileManagerPage extends StatefulWidget {
       required this.isSharedPassword,
       this.tabController,
       this.connToken,
+      this.automationRequestId,
       this.forceRelay})
       : super(key: key);
   final String id;
@@ -66,6 +68,7 @@ class FileManagerPage extends StatefulWidget {
   final bool? isSharedPassword;
   final bool? forceRelay;
   final String? connToken;
+  final String? automationRequestId;
   final DesktopTabController? tabController;
   final SimpleWrapper<State<FileManagerPage>?> _lastState = SimpleWrapper(null);
 
@@ -98,6 +101,7 @@ class _FileManagerPageState extends State<FileManagerPage>
     _ffi = FFI(null);
     _ffi.start(widget.id,
         isFileTransfer: true,
+        automationRequestId: widget.automationRequestId,
         password: widget.password,
         isSharedPassword: widget.isSharedPassword,
         connToken: widget.connToken,
@@ -162,7 +166,7 @@ class _FileManagerPageState extends State<FileManagerPage>
     super.build(context);
     return Overlay(key: _overlayKeyState.key, initialEntries: [
       OverlayEntry(builder: (_) {
-        return willPopScope(Scaffold(
+        return AutomationSessionView(ffi: _ffi, child: willPopScope(Scaffold(
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           body: Row(
             children: [
@@ -178,7 +182,7 @@ class _FileManagerPageState extends State<FileManagerPage>
               Flexible(flex: 2, child: statusList())
             ],
           ),
-        ));
+        )));
       })
     ]);
   }

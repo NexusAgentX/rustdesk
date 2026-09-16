@@ -268,6 +268,28 @@ fn key_event(name: &str, down: bool) -> Result<Event> {
         release: false,
     })
 }
+fn text_event(text: &str) -> Event {
+    let mut key = KeyEvent::new();
+    key.set_seq(text.to_owned());
+    let mut message = Message::new();
+    message.set_key_event(key);
+    Event { message, mapping: None, pause: 0, release: false }
+}
+
+fn append_text(events: &mut Vec<Event>, text: &str, platform: &str) {
+    if platform == "Windows" && !text.is_empty() {
+        // Stock Windows Unicode injection can duplicate characters in modern Notepad
+        // when a sequence is injected without pacing. Do not mutate the clipboard.
+        for ch in text.chars() {
+            let mut event = text_event(ch.encode_utf8(&mut [0; 4]));
+            event.pause = 10;
+            events.push(event);
+        }
+    } else {
+        events.push(text_event(text));
+    }
+}
+
 fn position(permit: &Permit, p: &Position, default: Option<&str>) -> Result<Event> {
     let id = p
         .snapshot_id
@@ -283,6 +305,7 @@ fn expand(
     action: &Action,
     default: Option<&str>,
     held: &mut Held,
+    platform: &str,
 ) -> Result<Vec<Event>> {
     let mut events = vec![];
     match action {
@@ -429,17 +452,26 @@ fn expand(
             if text.len() > 16 * 1024 {
                 return Err(BridgeError::invalid("Text exceeds 16 KiB"));
             }
-            let mut k = KeyEvent::new();
-            k.set_seq(text.clone());
-            let mut m = Message::new();
-            m.set_key_event(k);
-            events.push(Event {
-                message: m,
-                mapping: None,
-                pause: 0,
-                release: false,
-            });
+            // Windows' stock sequence injection ignores LF; send line breaks as physical keys.
+            let mut start = 0;
+            let mut chars = text.char_indices().peekable();
+            while let Some((offset, c)) = chars.next() {
+                if !matches!(c, '\r' | '\n' | '\t') { continue; }
+                if start < offset { append_text(&mut events, &text[start..offset], platform); }
+                let key = if c == '\t' { "Tab" } else { "Enter" };
+                let mut down = key_event(key, true)?;
+                if platform == "Windows" { down.pause = 10; }
+                events.push(down);
+                events.push(key_event(key, false)?);
+                start = offset + c.len_utf8();
+                if c == '\r' && chars.peek().is_some_and(|(_, c)| *c == '\n') {
+                    chars.next();
+                    start += 1;
+                }
+            }
+            if start < text.len() || text.is_empty() { append_text(&mut events, &text[start..], platform); }
         }
+
         Action::Wait { duration_ms } => {
             if *duration_ms > 30_000 {
                 return Err(BridgeError::invalid("Wait duration must be 0..30000 ms"));
@@ -476,14 +508,16 @@ pub fn validate(permit: &Permit, actions: &[Action], snapshot: Option<&str>) -> 
     }
     let mut held = Held::default();
     let mut duration = 0;
+    let platform = super::sessions::get(&permit.authority.session_id)
+        .and_then(|session| session.snapshot().platform).unwrap_or_default();
     for action in actions {
-        duration += expand(permit, action, snapshot, &mut held)?
+        duration += expand(permit, action, snapshot, &mut held, &platform)?
             .iter()
             .map(|e| e.pause)
             .sum::<u64>();
     }
     if duration > 30_000 {
-        return Err(BridgeError::invalid("Input batch delays exceed 30000 ms"));
+        return Err(BridgeError::invalid("Input pacing and waits exceed 30000 ms; split text or use clipboard paste"));
     }
     Ok(())
 }
@@ -559,7 +593,7 @@ pub async fn send(
     };
     let mut followed_display = None;
     for (index, action) in actions.iter().enumerate() {
-        let events = expand(&permit, action, snapshot.as_deref(), &mut held);
+        let events = expand(&permit, action, snapshot.as_deref(), &mut held, &platform);
         let result = async {
             for mut event in events? {
                 physical_key(&mut event.message, &platform)?;
@@ -691,6 +725,31 @@ fn physical_key(message: &mut Message, platform: &str) -> Result<()> {
         // Navigation keys must retain their physical identity. Legacy Windows
         // injection treats them as numpad keys and temporarily toggles NumLock.
         Some(key_event::Union::ControlKey(code)) => match code.enum_value().ok() {
+            Some(ControlKey::Control) => Key::ControlLeft,
+            Some(ControlKey::RControl) => Key::ControlRight,
+            Some(ControlKey::Shift) => Key::ShiftLeft,
+            Some(ControlKey::RShift) => Key::ShiftRight,
+            Some(ControlKey::Alt) => Key::Alt,
+            Some(ControlKey::RAlt) => Key::AltGr,
+            Some(ControlKey::Meta) => Key::MetaLeft,
+            Some(ControlKey::RWin) => Key::MetaRight,
+            Some(ControlKey::Return) => Key::Return,
+            Some(ControlKey::Tab) => Key::Tab,
+            Some(ControlKey::Escape) => Key::Escape,
+            Some(ControlKey::Backspace) => Key::Backspace,
+            Some(ControlKey::Space) => Key::Space,
+            Some(ControlKey::F1) => Key::F1,
+            Some(ControlKey::F2) => Key::F2,
+            Some(ControlKey::F3) => Key::F3,
+            Some(ControlKey::F4) => Key::F4,
+            Some(ControlKey::F5) => Key::F5,
+            Some(ControlKey::F6) => Key::F6,
+            Some(ControlKey::F7) => Key::F7,
+            Some(ControlKey::F8) => Key::F8,
+            Some(ControlKey::F9) => Key::F9,
+            Some(ControlKey::F10) => Key::F10,
+            Some(ControlKey::F11) => Key::F11,
+            Some(ControlKey::F12) => Key::F12,
             Some(ControlKey::LeftArrow) => Key::LeftArrow,
             Some(ControlKey::RightArrow) => Key::RightArrow,
             Some(ControlKey::UpArrow) => Key::UpArrow,
@@ -722,9 +781,74 @@ fn physical_key(message: &mut Message, platform: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn modifier(key: &KeyEvent, platform: &str) -> Option<ControlKey> {
+    use hbb_common::message_proto::{key_event, KeyboardMode};
+    use rdev::Key;
+    let control = match key.union {
+        Some(key_event::Union::ControlKey(code)) => code.enum_value().ok()?,
+        Some(key_event::Union::Chr(code)) if key.mode.enum_value() == Ok(KeyboardMode::Map) => {
+            let key = match platform {
+                "Windows" => rdev::win_key_from_scancode(code),
+                "Mac OS" => rdev::macos_key_from_code(code as _),
+                "Linux" => rdev::linux_key_from_code(code),
+                _ => return None,
+            };
+            match key {
+                Key::ControlLeft | Key::ControlRight => ControlKey::Control,
+                Key::ShiftLeft | Key::ShiftRight => ControlKey::Shift,
+                Key::Alt | Key::AltGr => ControlKey::Alt,
+                Key::MetaLeft | Key::MetaRight => ControlKey::Meta,
+                _ => return None,
+            }
+        },
+        _ => return None,
+    };
+    match control {
+        ControlKey::Control | ControlKey::RControl => Some(ControlKey::Control),
+        ControlKey::Shift | ControlKey::RShift => Some(ControlKey::Shift),
+        ControlKey::Alt | ControlKey::RAlt => Some(ControlKey::Alt),
+        ControlKey::Meta | ControlKey::RWin => Some(ControlKey::Meta),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn physical_modifiers_round_trip_for_wire_tracking() {
+        for platform in ["Windows", "Linux", "Mac OS"] {
+            for (name, expected) in [
+                ("ControlLeft", ControlKey::Control), ("ControlRight", ControlKey::Control),
+                ("ShiftLeft", ControlKey::Shift), ("AltLeft", ControlKey::Alt),
+                ("MetaLeft", ControlKey::Meta), ("MetaRight", ControlKey::Meta),
+            ] {
+                let mut event = key_event(name, true).unwrap();
+                physical_key(&mut event.message, platform).unwrap();
+                assert_eq!(modifier(event.message.key_event(), platform), Some(expected));
+                assert_eq!(event.message.key_event().mode.enum_value().unwrap(), hbb_common::message_proto::KeyboardMode::Map);
+            }
+        }
+    }
+    #[test]
+    fn multiline_text_preserves_unicode_and_normalizes_crlf_to_one_enter() {
+        let authority = Arc::new(super::super::control::Authority::new("text-test".into()));
+        let agent = super::super::control::Agent::new();
+        authority.attach(&agent, true).unwrap();
+        let permit = authority.resolve(&agent, &authority.view().session_ref.unwrap(), true).unwrap();
+        let events = expand(&permit, &Action::Text { text: "中文\r\n🙂\nend\t!".into() }, None, &mut Held::default(), "Windows").unwrap();
+        let text = events.iter().filter_map(|e| match &e.message.key_event().union {
+            Some(hbb_common::message_proto::key_event::Union::Seq(text)) => Some(text.as_str()), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(text.concat(), "中文🙂end!");
+        assert!(text.iter().all(|s| s.chars().count() == 1));
+        assert_eq!(events.iter().map(|e| e.pause).sum::<u64>(), 100);
+        let controls = events.iter().filter_map(|e| {
+            let k = e.message.key_event();
+            k.down.then(|| k.control_key()).filter(|c| *c != ControlKey::Unknown)
+        }).collect::<Vec<_>>();
+        assert_eq!(controls, [ControlKey::Return, ControlKey::Return, ControlKey::Tab]);
+    }
     #[tokio::test]
     async fn takeover_wakes_input_waiters_without_waiting_for_the_drag_delay() {
         let authority = Arc::new(super::super::control::Authority::new(

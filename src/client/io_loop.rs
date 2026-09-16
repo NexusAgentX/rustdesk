@@ -583,7 +583,20 @@ impl<T: InvokeUiSession> Remote<T> {
     async fn handle_msg_from_ui(&mut self, data: Data, peer: &mut Stream) -> bool {
         #[cfg(all(feature = "automation", target_os = "macos"))]
         self.automation_wire.transition(&self.handler, peer).await;
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let data = match data {
+            Data::AutomationFile(envelope) => match crate::automation::files::receive(envelope) {
+                Some(data) => data,
+                None => return true,
+            },
+            other => other,
+        };
         match data {
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            Data::AutomationFile(_) => {
+                log::error!("Rejected nested automation file envelope");
+                return true;
+            },
             #[cfg(all(feature = "automation", target_os = "macos"))]
             Data::Automation(envelope) => self.automation_wire.send(envelope, peer).await,
             #[cfg(all(feature = "automation", target_os = "macos"))]
@@ -1538,6 +1551,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         !lc.disable_clipboard.v && !lc.view_only.v
                     };
                     if clipboard_allowed {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation { observer.clipboard(std::slice::from_ref(&cb)); }
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(vec![cb], ClipboardSide::Client);
                         #[cfg(target_os = "ios")]
@@ -1561,6 +1576,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         !lc.disable_clipboard.v && !lc.view_only.v
                     };
                     if clipboard_allowed {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation { observer.clipboard(&_mcb.clipboards); }
                         #[cfg(not(any(target_os = "android", target_os = "ios")))]
                         update_clipboard(_mcb.clipboards, ClipboardSide::Client);
                         #[cfg(target_os = "ios")]

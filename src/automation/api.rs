@@ -67,10 +67,10 @@ pub fn view(session: &SessionHandle, full: bool) -> Value {
     let s = session.snapshot();
     let control = session.control().view();
     let primary = screen::primary(session);
-    let mut result = json!({"session_id":s.session_id,"session_ref":control.session_ref,"peer_id":s.peer_id,"kind":if s.kind==SessionKind::Desktop{"desktop"}else{"terminal"},"state":state_name(s.state),"control":{"mode":control.mode,"approval_required":control.approval_required,"transitioning":control.transitioning},"revision":revision(session),"platform":s.platform,"can_input":s.kind==SessionKind::Desktop&&control.mode==super::control::Mode::Ai&&!control.transitioning&&s.authenticated&&s.state==ConnectionState::Ready&&s.permissions.get("keyboard")==Some(&true),"can_capture":s.kind==SessionKind::Desktop&&s.authenticated,"can_use_terminal":s.kind==SessionKind::Terminal&&s.authenticated&&s.terminal_supported==Some(true)});
+    let mut result = json!({"session_id":s.session_id,"session_ref":control.session_ref,"peer_id":s.peer_id,"kind":s.kind.name(),"state":state_name(s.state),"control":{"mode":control.mode,"approval_required":control.approval_required,"transitioning":control.transitioning},"revision":revision(session),"platform":s.platform,"can_input":s.kind==SessionKind::Desktop&&control.mode==super::control::Mode::Ai&&!control.transitioning&&s.authenticated&&s.state==ConnectionState::Ready&&s.permissions.get("keyboard")==Some(&true),"can_capture":s.kind==SessionKind::Desktop&&s.authenticated,"can_use_terminal":s.kind==SessionKind::Terminal&&s.authenticated&&s.terminal_supported==Some(true)});
     if s.kind == SessionKind::Desktop {
         result["displays"]=json!(s.displays.iter().map(|d|json!({"id":d.id.to_string(),"name":d.name,"primary":primary.map(|p|p==d.id),"width":d.width,"height":d.height})).collect::<Vec<_>>());
-    } else {
+    } else if s.kind == SessionKind::Terminal {
         result["terminals"] = json!(terminals::visible_list(
             &s.session_id,
             session.control().binding_id().as_deref()

@@ -6,7 +6,7 @@
 
 底座：RustDesk `1.4.9` / `6c578292e8ebbbec708b76986ba8c4bc7c509747`；首个平台为本机 macOS / ARM64。SDK 采用已选定的 `rmcp =3.3.0`，HTTP 使用 Axum 0.8 系列。
 
-下一版增量契约见 [MCP 能力与操作查询](MCP-CAPABILITIES-OPERATIONS.md)。下文保留首版 20 个工具设计；新增查询工具以增量文档为准。
+增量契约见 [MCP 能力与操作查询](MCP-CAPABILITIES-OPERATIONS.md) 和 [文件传输与文本剪贴板](MCP-FILES-CLIPBOARD.md)。下文保留首版 20 个工具设计；新增工具以增量文档为准。
 
 ## 1. 接口设计原则
 

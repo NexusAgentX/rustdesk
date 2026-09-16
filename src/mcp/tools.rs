@@ -64,10 +64,21 @@ fn definition<T: JsonSchema + 'static>(
 }
 pub fn definitions() -> Vec<Tool> {
     vec![
+    definition::<Read>("rd_clipboard_settings_get","Read text clipboard synchronization preference, effective state, and permission for a desktop session. Does not read the local clipboard.",true),
+    definition::<ClipboardSet>("rd_clipboard_settings_set","Set text synchronization enabled explicitly. Persists the peer preference and sends the option to the connected peer; requires AI control. Disabling does not clear clipboard text.",false),
+    definition::<ClipboardRead>("rd_clipboard_read","Read the latest text received from this binding's remote clipboard synchronization, optionally waiting for a changed revision. Unknown means no observed text; this is not an active remote clipboard pull. Cache expires after five minutes and across binding/connection changes.",true),
+    definition::<ClipboardWrite>("rd_clipboard_write","Send up to 1 MiB of UTF-8 text to the remote clipboard without changing the local clipboard. Requires enabled synchronization and AI control. Optional paste sends Ctrl+V (Command+V on macOS) after delay_ms (default 200, max 30000); neither sending nor delay proves the application pasted successfully.",false),
+    definition::<ClipboardType>("rd_clipboard_type","Type up to 16 KiB of explicit text, or if omitted read the local system clipboard and type its text, using the existing input path. This corresponds to Send clipboard keystrokes; it does not set the remote clipboard. Windows types one character every 10 ms; total input pacing/waits must fit 30 seconds, otherwise split the text or use clipboard paste. Requires keyboard permission and AI control.",false),
+    definition::<FileList>("rd_file_list","List a local or remote directory through a visible file_transfer session. Returns a directory job with up to 1000 entries; use file_job_get next_offset for further pages. Empty remote path requests the remote home directory. One directory request per session at a time; timeout does not mean an empty directory.",true),
+    definition::<FileTransfer>("rd_file_transfer","Upload or download 1..32 files/directories using the stock file-transfer protocol. destination_path is the complete target path, not just its parent. Returns tracked jobs, not a claim of completion. Default conflict policy is ask; use file_conflict_resolve. Partial files can remain after cancellation. Requires AI control and a file_transfer session.",false),
+    definition::<Read>("rd_file_jobs","List this binding's retained directory and transfer jobs without changing them.",true),
+    definition::<FileJobGet>("rd_file_job_get","Read one file job, optionally waiting for completion or a revision change. Page completed directory entries using offset and limit. Job completion is based on protocol events; interrupted/cancelled transfers may leave partial files.",true),
+    definition::<FileJobWrite>("rd_file_job_cancel","Cancel one tracked file job under AI control. Cancels the local transfer and requests remote cleanup, without deleting partial destination files.",false),
+    definition::<FileConflict>("rd_file_conflict_resolve","Resolve a pending same-name conflict with explicit overwrite=true or false (skip). Optionally apply to all remaining conflicts in this job.",false),
     definition::<Read>("rd_capabilities_get","Inspect implemented MCP capabilities for this session, including peer version, permission, control and readiness blockers. Unknown support is not permission. Does not take control.",true),
     definition::<OperationGet>("rd_operation_get","Query this MCP client's retained operation_id without replaying a write. Optional wait_ms waits for local execution, not remote application completion. Original pending results have unknown final outcome; inspect current session or terminal state. Records expire five minutes after execution and when this MCP client ends.",true),
-    definition::<List>("rd_session_list","Discover visible desktop and terminal sessions. Multiple MCP agents may connect; ownership is exclusive per core session.",true),
-    definition::<Open>("rd_session_open","Open a visible GUI session or reuse and attach to an existing one. Only newly created sessions start under AI control. Optional password is single-use connection authentication, never OS login.",false),
+    definition::<List>("rd_session_list","Discover visible desktop, terminal and file-transfer sessions. Multiple MCP agents may connect; ownership is exclusive per core session.",true),
+    definition::<Open>("rd_session_open","Open a visible GUI session or reuse and attach to an existing one. Only newly created sessions start under AI control. Optional password is single-use connection authentication, never OS login. kind supports desktop, terminal and file_transfer. Optional from_session_ref reuses an authenticated same-peer connection token when available; unsupported token reuse still requires authentication.",false),
     definition::<Attach>("rd_session_attach","Attach to an existing core session without changing its control mode. Returns session_ref; fails if another agent owns it.",false),
     definition::<Write>("rd_session_detach","Detach this binding, cancel queued input and return control to the human. Keep the GUI and remote connection.",false),
     definition::<Get>("rd_session_get","Read current session state and session_ref. Optionally wait for a revision change or query an operation_id. Old references remain read-only within the binding.",true),
@@ -140,6 +151,196 @@ pub(super) async fn dispatch(
 ) -> Result<Reply> {
     let agent = &client.agent;
     match name {
+        "rd_clipboard_settings_get" => {
+            let p: Read = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            Ok(Reply::success(
+                json!({"settings":crate::automation::text_clipboard::settings(&permit)?}),
+            ))
+        }
+        "rd_clipboard_settings_set" => {
+            let p: ClipboardSet = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            Ok(Reply::success(
+                json!({"settings":crate::automation::text_clipboard::set_enabled(permit,p.enabled).await?}),
+            ))
+        }
+        "rd_clipboard_read" => {
+            let p: ClipboardRead = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            Ok(Reply::success(
+                json!({"clipboard":crate::automation::text_clipboard::read(&permit,p.after_revision,wait(p.wait_ms,0)?).await?}),
+            ))
+        }
+        "rd_clipboard_write" => {
+            let p: ClipboardWrite = parse(args)?;
+            let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
+            let delay = wait(p.delay_ms, 200)?;
+            let mut actions = vec![];
+            if p.paste.unwrap_or(false) {
+                actions = vec![
+                    input::Action::Wait { duration_ms: delay },
+                    input::Action::Shortcut {
+                        modifiers: vec![
+                            if session.snapshot().platform.as_deref() == Some("Mac OS") {
+                                input::Modifier::Meta
+                            } else {
+                                input::Modifier::Control
+                            },
+                        ],
+                        key: input::KeyName::KeyV,
+                    },
+                ];
+                input::validate(&permit, &actions, None)?;
+            }
+            crate::automation::text_clipboard::write(permit.clone(), p.text).await?;
+            let paste = if actions.is_empty() {
+                Value::Null
+            } else {
+                let progress = input::send(permit, actions, None, async {
+                    tokio::select! {_=cancel.cancelled()=>{},_=client.cancel.cancelled()=>{}}
+                })
+                .await;
+                match progress {
+                    Ok(p) => {
+                        json!({"delivery":p.delivery,"sent_events":p.sent_events,"error":p.error})
+                    }
+                    Err(e) => json!({"error":e}),
+                }
+            };
+            let failed = !paste.is_null() && !paste["error"].is_null();
+            let mut reply = Reply::success(json!({"delivery":"sent","paste":paste}));
+            if failed {
+                reply.value["ok"] = json!(false);
+                reply.value["error"] = paste["error"].clone();
+                reply = reply.status("partial");
+            }
+            Ok(reply)
+        }
+        "rd_clipboard_type" => {
+            let p: ClipboardType = parse(args)?;
+            let (session, permit) = api::resolve(agent, &p.session_ref, true)?;
+            if session.snapshot().kind != SessionKind::Desktop {
+                return Err(BridgeError::new(
+                    "WRONG_SESSION_KIND",
+                    "Typing requires a desktop session",
+                ));
+            }
+            permit.check()?;
+            let text = match p.text {
+                Some(t) => t,
+                None => crate::automation::text_clipboard::local_text().await?,
+            };
+            let progress = input::send(permit, vec![input::Action::Text { text }], None, async {
+                tokio::select! {_=cancel.cancelled()=>{},_=client.cancel.cancelled()=>{}}
+            })
+            .await?;
+            let mut reply = Reply::success(
+                json!({"delivery":progress.delivery,"sent_events":progress.sent_events}),
+            );
+            if let Some(error) = progress.error {
+                reply.value["ok"] = json!(false);
+                reply.value["error"] = json!(error);
+                reply = reply.status(if progress.sent_events > 0 {
+                    "partial"
+                } else {
+                    "failed"
+                });
+            }
+            Ok(reply)
+        }
+        "rd_file_list" => {
+            let p: FileList = parse(args)?;
+            let ms = wait(p.wait_ms, 10000)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            let id = crate::automation::files::directory(
+                permit.clone(),
+                p.path,
+                matches!(p.location, FileLocation::Local),
+                p.include_hidden.unwrap_or(false),
+            )
+            .await?;
+            let job = crate::automation::files::get(&permit, &id, None, ms, 0, 1000).await?;
+            Ok(Reply::success(json!({"job":job})))
+        }
+        "rd_file_transfer" => {
+            let p: FileTransfer = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            if p.items.is_empty() || p.items.len() > 32 {
+                return Err(BridgeError::invalid("items must contain 1..32 paths"));
+            }
+            for item in &p.items {
+                crate::automation::files::validate_path(&item.source_path, false)?;
+                crate::automation::files::validate_path(&item.destination_path, false)?;
+            }
+            let policy = match p.conflict {
+                Some(ConflictPolicy::Overwrite) => "overwrite",
+                Some(ConflictPolicy::Skip) => "skip",
+                _ => "ask",
+            };
+            let mut jobs = Vec::new();
+            for item in p.items {
+                match crate::automation::files::transfer(
+                    permit.clone(),
+                    item.source_path,
+                    item.destination_path,
+                    matches!(p.direction, TransferDirection::Download),
+                    p.include_hidden.unwrap_or(false),
+                    policy,
+                )
+                .await
+                {
+                    Ok(id) => {
+                        jobs.push(crate::automation::files::get(&permit, &id, None, 0, 0, 1).await?)
+                    }
+                    Err(error) => {
+                        let mut reply = Reply::error(error);
+                        reply.value["data"] = json!({"jobs":jobs});
+                        if !jobs.is_empty() {
+                            reply = reply.status("partial");
+                        }
+                        return Ok(reply);
+                    }
+                }
+            }
+            Ok(Reply::success(json!({"jobs":jobs})))
+        }
+        "rd_file_jobs" => {
+            let p: Read = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            Ok(Reply::success(
+                json!({"jobs":crate::automation::files::list(&permit)?}),
+            ))
+        }
+        "rd_file_job_get" => {
+            let p: FileJobGet = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            Ok(Reply::success(
+                json!({"job":crate::automation::files::get(&permit,&p.job_id,p.after_revision,wait(p.wait_ms,0)?,p.offset.unwrap_or(0),p.limit.unwrap_or(1000)).await?}),
+            ))
+        }
+        "rd_file_job_cancel" => {
+            let p: FileJobWrite = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            crate::automation::files::cancel(permit.clone(), &p.job_id).await?;
+            Ok(Reply::success(
+                json!({"job":crate::automation::files::get(&permit,&p.job_id,None,0,0,1).await?}),
+            ))
+        }
+        "rd_file_conflict_resolve" => {
+            let p: FileConflict = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            crate::automation::files::confirm(
+                permit.clone(),
+                &p.job_id,
+                p.overwrite,
+                p.apply_to_remaining.unwrap_or(false),
+            )
+            .await?;
+            Ok(Reply::success(
+                json!({"job":crate::automation::files::get(&permit,&p.job_id,None,0,0,1).await?}),
+            ))
+        }
         "rd_capabilities_get" => {
             let p: Read = parse(args)?;
             let (session, permit) = api::resolve(agent, &p.session_ref, false)?;
@@ -184,7 +385,7 @@ pub(super) async fn dispatch(
             } else {
                 0
             };
-            let summaries=all.iter().filter_map(|s|{let snapshot=s.snapshot();let owner=s.control().view().agent_id;let mine=owner.as_deref()==Some(&agent.id);if matches!(p.scope,Some(Scope::Mine))&&!mine||matches!(p.scope,Some(Scope::Available))&&owner.is_some()&&!mine{return None;}Some(json!({"session_id":snapshot.session_id,"peer_id":snapshot.peer_id,"kind":if snapshot.kind==SessionKind::Desktop{"desktop"}else{"terminal"},"gui_registered":!snapshot.ui_session_ids.is_empty(),"connection_state":api::state_name(snapshot.state),"owner":if mine{"self"}else if owner.is_some(){"other"}else{"none"}}))}).collect::<Vec<_>>();
+            let summaries=all.iter().filter_map(|s|{let snapshot=s.snapshot();let owner=s.control().view().agent_id;let mine=owner.as_deref()==Some(&agent.id);if matches!(p.scope,Some(Scope::Mine))&&!mine||matches!(p.scope,Some(Scope::Available))&&owner.is_some()&&!mine{return None;}Some(json!({"session_id":snapshot.session_id,"peer_id":snapshot.peer_id,"kind":snapshot.kind.name(),"gui_registered":!snapshot.ui_session_ids.is_empty(),"connection_state":api::state_name(snapshot.state),"owner":if mine{"self"}else if owner.is_some(){"other"}else{"none"}}))}).collect::<Vec<_>>();
             let next = offset.checked_add(limit as usize).ok_or_else(|| {
                 BridgeError::new(
                     "CURSOR_EXPIRED",
@@ -198,16 +399,30 @@ pub(super) async fn dispatch(
         "rd_session_open" => {
             let p: Open = parse(args)?;
             let ms = wait(p.wait_ms, 10000)?;
-            let kind = if matches!(p.kind, Some(Kind::Terminal)) {
-                SessionKind::Terminal
+            let kind = match p.kind {
+                Some(Kind::Terminal) => SessionKind::Terminal,
+                Some(Kind::FileTransfer) => SessionKind::FileTransfer,
+                _ => SessionKind::Desktop,
+            };
+            let token = if let Some(source) = p.from_session_ref {
+                let (source, permit) = api::resolve(agent, &source, false)?;
+                permit.read_check()?;
+                let snapshot = source.snapshot();
+                if snapshot.peer_id != p.peer_id.trim() || !snapshot.authenticated {
+                    return Err(BridgeError::invalid(
+                        "Source session must be authenticated to the same peer",
+                    ));
+                }
+                sessions::core(&snapshot.session_id).and_then(|core| core.get_conn_token())
             } else {
-                SessionKind::Desktop
+                None
             };
             let (session, created) = gui::reserve(
                 agent,
                 p.peer_id.trim(),
                 kind,
                 p.password.clone(),
+                token,
                 p.force_relay.unwrap_or(false),
             )?;
             let mut intent = gui::OpenGuard::new(session.clone(), created);
@@ -740,7 +955,16 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_session_attach" => shape!(Attach),
         "rd_session_get" => shape!(Get),
         "rd_session_list" => shape!(List),
-        "rd_capabilities_get" => shape!(Read),
+        "rd_capabilities_get" | "rd_file_jobs" | "rd_clipboard_settings_get" => shape!(Read),
+        "rd_clipboard_settings_set" => shape!(ClipboardSet),
+        "rd_clipboard_read" => shape!(ClipboardRead),
+        "rd_clipboard_write" => shape!(ClipboardWrite),
+        "rd_clipboard_type" => shape!(ClipboardType),
+        "rd_file_list" => shape!(FileList),
+        "rd_file_transfer" => shape!(FileTransfer),
+        "rd_file_job_get" => shape!(FileJobGet),
+        "rd_file_job_cancel" => shape!(FileJobWrite),
+        "rd_file_conflict_resolve" => shape!(FileConflict),
         "rd_operation_get" => shape!(OperationGet),
         "rd_session_detach" | "rd_control_release" => shape!(Write),
         "rd_session_disconnect" | "rd_session_close" => shape!(WaitWrite),
@@ -766,6 +990,11 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
             name,
             "rd_session_get"
                 | "rd_capabilities_get"
+                | "rd_file_jobs"
+                | "rd_file_list"
+                | "rd_file_job_get"
+                | "rd_clipboard_read"
+                | "rd_clipboard_settings_get"
                 | "rd_screen_capture"
                 | "rd_terminal_list"
                 | "rd_terminal_read"
@@ -786,7 +1015,20 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
-        "rd_capabilities_get" => &[("session_ref", "string"), ("peer", "object"), ("capabilities", "object"), ("contract", "object")],
+        "rd_clipboard_settings_get" | "rd_clipboard_settings_set" => &[("settings", "object")],
+        "rd_clipboard_read" => &[("clipboard", "object")],
+        "rd_clipboard_write" => &[("delivery", "string"), ("paste", "object|null")],
+        "rd_clipboard_type" => &[("delivery", "string"), ("sent_events", "integer")],
+        "rd_file_list" | "rd_file_job_get" | "rd_file_job_cancel" | "rd_file_conflict_resolve" => {
+            &[("job", "object")]
+        }
+        "rd_file_jobs" | "rd_file_transfer" => &[("jobs", "array")],
+        "rd_capabilities_get" => &[
+            ("session_ref", "string"),
+            ("peer", "object"),
+            ("capabilities", "object"),
+            ("contract", "object"),
+        ],
         "rd_operation_get" => &[("operation", "object")],
         "rd_session_list" => &[("sessions", "array"), ("next_cursor", "string|null")],
         "rd_session_open" => &[

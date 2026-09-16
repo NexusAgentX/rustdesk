@@ -329,7 +329,7 @@ async fn run(
     args: &Map<String, Value>,
     cancel: CancellationToken,
 ) -> Result<Reply> {
-    if matches!(name, "rd_input_send" | "rd_terminal_write") {
+    if matches!(name, "rd_input_send" | "rd_terminal_write" | "rd_clipboard_write" | "rd_clipboard_type") {
         return tools::dispatch(client, name, args, &cancel).await;
     }
     tokio::select! {_=cancel.cancelled()=>Err(BridgeError::new("CANCELLED","Call was cancelled; already-sent input cannot be rolled back")),_=client.cancel.cancelled()=>Err(BridgeError::new("BINDING_EXPIRED","MCP logical client disconnected")),result=tools::dispatch(client,name,args,&cancel)=>result}

@@ -58,6 +58,7 @@ class _FileManagerTabPageState extends State<FileManagerTabPage> {
           tabController: tabController,
           forceRelay: params['forceRelay'],
           connToken: params['connToken'],
+          automationRequestId: params['automationRequestId'],
         )));
   }
 
@@ -69,6 +70,14 @@ class _FileManagerTabPageState extends State<FileManagerTabPage> {
       debugPrint(
           "[FileTransfer] call ${call.method} with args ${call.arguments} from window $fromWindowId to ${windowId()}");
       // for simplify, just replace connectionId
+      if (call.method == 'automation_close') {
+        final args = jsonDecode(call.arguments);
+        for (final tab in List<TabInfo>.from(tabController.state.value.tabs)) {
+          final page = tab.page as FileManagerPage;
+          if (bind.automationCanClose(requestId: args['request_id'], sessionId: page.ffi.sessionId)) tabController.closeBy(tab.key);
+        }
+        return true;
+      }
       if (call.method == kWindowEventNewFileTransfer) {
         final args = jsonDecode(call.arguments);
         final id = args['id'];
@@ -95,6 +104,7 @@ class _FileManagerTabPageState extends State<FileManagerTabPage> {
               tabController: tabController,
               forceRelay: args['forceRelay'],
               connToken: args['connToken'],
+              automationRequestId: args['automationRequestId'],
             )));
       } else if (call.method == "onDestroy") {
         tabController.clear();

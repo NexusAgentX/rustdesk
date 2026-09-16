@@ -17,6 +17,7 @@ struct Pending {
     session: SessionHandle,
     reference: String,
     password: Option<String>,
+    conn_token: Option<String>,
     password_applied: bool,
     force_relay: bool,
     deadline: Instant,
@@ -41,6 +42,7 @@ pub fn reserve(
     peer_id: &str,
     kind: SessionKind,
     password: Option<String>,
+    conn_token: Option<String>,
     force_relay: bool,
 ) -> Result<(SessionHandle, bool)> {
     if peer_id.is_empty() || peer_id.len() > 256 || peer_id.chars().any(char::is_control) {
@@ -96,7 +98,7 @@ pub fn reserve(
         None
     };
     let (changed, _) = watch::channel(false);
-    let event = serde_json::json!({"name":"automation_open", "request_id":id, "peer_id":peer_id, "kind": if kind == SessionKind::Desktop {"desktop"} else {"terminal"}, "terminal_id":terminal_id.map(|id| id.to_string()).unwrap_or_default(), "force_relay":force_relay.to_string()}).to_string();
+    let event = serde_json::json!({"name":"automation_open", "request_id":id, "peer_id":peer_id, "kind": kind.name(), "terminal_id":terminal_id.map(|id| id.to_string()).unwrap_or_default(), "force_relay":force_relay.to_string()}).to_string();
     if crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event) != Some(true) {
         return Err(BridgeError::new(
             "GUI_UNAVAILABLE",
@@ -110,6 +112,7 @@ pub fn reserve(
             session: session.clone(),
             reference,
             password,
+            conn_token,
             password_applied: false,
             force_relay,
             deadline: Instant::now() + Duration::from_secs(30),
@@ -122,7 +125,7 @@ pub fn reserve(
 }
 
 pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
-    let (session, peer, kind, force_relay) = {
+    let (session, peer, kind, force_relay, conn_token) = {
         let mut requests = pending().lock().unwrap();
         let request = requests
             .get_mut(request_id)
@@ -143,6 +146,7 @@ pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
                 .is_ok();
         if !active {
             request.password = None;
+            request.conn_token = None;
             if let Err(error) = request.session.control().release(None, true) {
                 hbb_common::log::warn!("GUI reservation cleanup: {}", error.code);
             }
@@ -161,6 +165,7 @@ pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
             snapshot.peer_id,
             snapshot.kind,
             request.force_relay,
+            request.conn_token.take(),
         )
     };
     if sessions::registered().iter().any(|s| {
@@ -187,7 +192,7 @@ pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
     crate::flutter::session_add(
         &view,
         &peer,
-        false,
+        kind == SessionKind::FileTransfer,
         false,
         false,
         false,
@@ -196,7 +201,7 @@ pub fn add_session(request_id: &str, view: Uuid) -> Result<()> {
         force_relay,
         String::new(),
         false,
-        None,
+        conn_token,
     )
     .map_err(|_| BridgeError::new("GUI_UNAVAILABLE", "Official session registration failed"))?;
     let mut requests = pending().lock().unwrap();
@@ -301,7 +306,7 @@ pub fn close(permit: super::control::Permit) -> Result<()> {
             "Too many pending GUI close requests",
         ));
     }
-    let event=serde_json::json!({"name":"automation_close","request_id":request,"peer_id":session.snapshot().peer_id,"kind":if session.snapshot().kind==SessionKind::Desktop{"desktop"}else{"terminal"}}).to_string();
+    let event=serde_json::json!({"name":"automation_close","request_id":request,"peer_id":session.snapshot().peer_id,"kind":session.snapshot().kind.name()}).to_string();
     pending.insert(request.clone(), (Instant::now(), permit));
     if crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event) != Some(true) {
         pending.remove(&request);

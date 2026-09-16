@@ -3831,6 +3831,8 @@ pub enum Data {
     #[cfg(all(feature = "automation", target_os = "macos"))]
     AutomationWake,
     #[cfg(all(feature = "automation", target_os = "macos"))]
+    AutomationFile(crate::automation::files::Envelope),
+    #[cfg(all(feature = "automation", target_os = "macos"))]
     AutomationLogin(crate::automation::auth::Envelope),
     #[cfg(all(feature = "automation", target_os = "macos"))]
     AutomationDisconnect(crate::automation::control::Permit),

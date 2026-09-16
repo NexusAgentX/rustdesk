@@ -566,7 +566,9 @@ _registerEventHandler() {
     platformFFI.registerEventHandler('automation_open', 'automation_open', (evt) async {
       final requestId = evt['request_id'];
       try {
-        if (evt['kind'] == 'terminal') {
+        if (evt['kind'] == 'file_transfer') {
+          await rustDeskWinManager.newFileTransfer(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId);
+        } else if (evt['kind'] == 'terminal') {
           await rustDeskWinManager.newTerminal(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId == '' ? null : requestId, terminalId: int.tryParse(evt['terminal_id'] ?? ''));
         } else {
           await rustDeskWinManager.newRemoteDesktop(evt['peer_id'], forceRelay: evt['force_relay'] == 'true', automationRequestId: requestId);

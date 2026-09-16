@@ -568,6 +568,11 @@ impl FlutterHandler {
             event.iter().map(|(k, v)| (*k, json!(*v))).collect();
         debug_assert!(h.get("name").is_none());
         h.insert("name", json!(name));
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        {
+            let views = self.session_handlers.read().unwrap().keys().copied().collect::<Vec<_>>();
+            for view in views { crate::automation::files::observe(&view, name, &h); }
+        }
         let out = serde_json::ser::to_string(&h).unwrap_or("".to_owned());
         for (sid, session) in self.session_handlers.read().unwrap().iter() {
             let mut push = false;

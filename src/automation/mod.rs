@@ -14,3 +14,6 @@ pub mod gui;
 pub mod sessions;
 pub mod terminals;
 pub mod wire;
+
+pub mod files;
+pub mod text_clipboard;

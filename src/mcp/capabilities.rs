@@ -54,7 +54,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
     let cap = |supported, permission, write, ready, tools: &[&str]| {
         capability(&s, &c, supported, permission, write, ready, tools)
     };
-    json!({
+    let mut result = json!({
         "session_ref":c.session_ref,
         "peer":{"platform":s.platform,"version":s.peer_version,"authenticated":s.authenticated,
             "connection_state":crate::automation::api::state_name(s.state),"permissions":s.permissions},
@@ -62,7 +62,13 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "session_read":cap(Some(true),Some(true),false,false,&["rd_session_get","rd_capabilities_get"]),
             "session_lifecycle":cap(Some(true),Some(true),true,false,&["rd_session_disconnect","rd_session_reconnect","rd_session_close"]),
             "screen_capture":cap(Some(desktop),Some(true),false,true,&["rd_screen_capture"]),
-            "keyboard_mouse":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_input_send"]),
+            "file_read":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),false,true,&["rd_file_list","rd_file_jobs","rd_file_job_get"]),
+            "file_write":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),true,true,&["rd_file_transfer","rd_file_job_cancel","rd_file_conflict_resolve"]),
+            "text_clipboard":cap(Some(desktop),s.permissions.get("clipboard").copied(),false,true,&["rd_clipboard_read"]),
+            "clipboard_settings_read":cap(Some(desktop),Some(true),false,false,&["rd_clipboard_settings_get"]),
+            "clipboard_settings_write":cap(Some(desktop),s.permissions.get("clipboard").copied(),true,true,&["rd_clipboard_settings_set"]),
+            "text_clipboard_write":cap(Some(desktop),s.permissions.get("clipboard").copied(),true,true,&["rd_clipboard_write"]),
+            "keyboard_mouse":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_input_send","rd_clipboard_type"]),
             "terminal_read":cap(terminal,Some(true),false,true,&["rd_terminal_list","rd_terminal_read"]),
             "terminal_write":cap(terminal,Some(true),true,true,&["rd_terminal_create","rd_terminal_write","rd_terminal_resize","rd_terminal_close"])
         },
@@ -79,7 +85,32 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "credentials":"Never included in operation arguments or capability results; authentication values are single-use.",
             "future_features":"Capabilities list only implemented MCP operations. GUI-only features are not promises of MCP support."
         }
-    })
+    });
+    if desktop {
+        if let Some(core) = crate::automation::sessions::core(&s.session_id) {
+            let lc = core.lc.read().unwrap();
+            for key in ["text_clipboard", "text_clipboard_write"] {
+                if lc.disable_clipboard.v || lc.view_only.v {
+                    result["capabilities"][key]["available"] = json!(false);
+                    if let Some(blockers) = result["capabilities"][key]["blockers"].as_array_mut() {
+                        blockers.push(json!("clipboard_disabled"));
+                    }
+                }
+            }
+            if lc.view_only.v {
+                for key in ["keyboard_mouse", "clipboard_settings_write"] {
+                    result["capabilities"][key]["available"] = json!(false);
+                    if let Some(blockers) = result["capabilities"][key]["blockers"].as_array_mut() {
+                        blockers.push(json!("view_only"));
+                    }
+                }
+            }
+        }
+    }
+    for key in ["clipboard_settings_read", "clipboard_settings_write"] {
+        result["capabilities"][key]["scope"] = json!("peer_preference");
+    }
+    result
 }
 
 #[cfg(test)]

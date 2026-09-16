@@ -21,8 +21,9 @@ pub enum Scope {
 pub enum Kind {
     Desktop,
     Terminal,
+    FileTransfer,
 }
-params!(Open { operation_id: Option<String>, peer_id: String, password: Option<String>, kind: Option<Kind>, force_relay: Option<bool>, wait_ms: Option<u64> });
+params!(Open { operation_id: Option<String>, peer_id: String, password: Option<String>, from_session_ref: Option<String>, kind: Option<Kind>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(Attach { session_id: String, operation_id: Option<String> });
 params!(Write { session_ref: String, operation_id: Option<String> });
 params!(WaitWrite { session_ref: String, operation_id: Option<String>, wait_ms: Option<u64> });
@@ -138,3 +139,23 @@ mod tests {
         .is_ok());
     }
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileLocation { Local, Remote }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferDirection { Upload, Download }
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy { Ask, Overwrite, Skip }
+params!(FileList { session_ref: String, path: String, location: FileLocation, include_hidden: Option<bool>, wait_ms: Option<u64> });
+params!(TransferItem { source_path: String, destination_path: String });
+params!(FileTransfer { session_ref: String, operation_id: Option<String>, direction: TransferDirection, items: Vec<TransferItem>, include_hidden: Option<bool>, conflict: Option<ConflictPolicy> });
+params!(FileJobGet { session_ref: String, job_id: String, after_revision: Option<u64>, wait_ms: Option<u64>, offset: Option<usize>, limit: Option<usize> });
+params!(FileJobWrite { session_ref: String, operation_id: Option<String>, job_id: String });
+params!(FileConflict { session_ref: String, operation_id: Option<String>, job_id: String, overwrite: bool, apply_to_remaining: Option<bool> });
+params!(ClipboardRead { session_ref: String, after_revision: Option<u64>, wait_ms: Option<u64> });
+params!(ClipboardSet { session_ref: String, operation_id: Option<String>, enabled: bool });
+params!(ClipboardWrite { session_ref: String, operation_id: Option<String>, text: String, paste: Option<bool>, delay_ms: Option<u64> });
+params!(ClipboardType { session_ref: String, operation_id: Option<String>, text: Option<String> });

@@ -18,6 +18,13 @@ use uuid::Uuid;
 pub enum SessionKind {
     Desktop,
     Terminal,
+    FileTransfer,
+}
+
+impl SessionKind {
+    pub fn name(self) -> &'static str {
+        match self { Self::Desktop => "desktop", Self::Terminal => "terminal", Self::FileTransfer => "file_transfer" }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,6 +385,9 @@ impl Connection {
                     .permissions
                     .entry("keyboard".into())
                     .or_insert(true);
+                for permission in ["clipboard", "file"] {
+                    state.snapshot.permissions.entry(permission.into()).or_insert(true);
+                }
             }
             state.snapshot.terminal_supported = peer.features.as_ref().map(|f| f.terminal);
             state.snapshot.current_display = peer.current_display as usize;
@@ -390,9 +400,14 @@ impl Connection {
                 }
                 SessionKind::Terminal => ConnectionState::AwaitingHuman,
                 SessionKind::Desktop => ConnectionState::AwaitingFrame,
+                SessionKind::FileTransfer => ConnectionState::Ready,
             };
             self.session.invalidate_frames(state);
         });
+    }
+
+    pub(crate) fn clipboard(&self, clipboards: &[hbb_common::message_proto::Clipboard]) {
+        super::text_clipboard::observe(&self.session, clipboards);
     }
 
     pub(crate) fn permission(&self, permission: &PermissionInfo) {
@@ -448,6 +463,7 @@ impl Connection {
 
     pub(crate) fn disconnected(&self) {
         self.update(|state| {
+            super::files::disconnected(&state.snapshot.session_id, self.epoch);
             super::terminals::disconnected(
                 &state.snapshot.session_id,
                 self.session.control().binding_id(),
@@ -587,6 +603,7 @@ fn session<T: InvokeUiSession>(core: &Session<T>) -> Option<SessionHandle> {
     let kind = match core.lc.read().unwrap().conn_type {
         ConnType::DEFAULT_CONN => SessionKind::Desktop,
         ConnType::TERMINAL => SessionKind::Terminal,
+        ConnType::FILE_TRANSFER => SessionKind::FileTransfer,
         _ => return None,
     };
     let key = Arc::as_ptr(&core.connection_round_state) as usize;

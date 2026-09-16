@@ -171,6 +171,7 @@ impl WireState {
     }
 
     pub async fn transition<T: InvokeUiSession>(&mut self, core: &Session<T>, peer: &mut Stream) {
+        super::files::reap(core);
         let Some(session) = sessions::for_core(core) else {
             return;
         };
@@ -216,6 +217,9 @@ impl WireState {
                         "Remote session is not ready for input",
                     ));
                 }
+                if matches!(envelope.message.union, Some(message::Union::Clipboard(_) | message::Union::MultiClipboards(_))) {
+                    super::text_clipboard::check(&envelope.permit, true, true)?;
+                }
                 if matches!(
                     envelope.message.union,
                     Some(message::Union::KeyEvent(_) | message::Union::MouseEvent(_))
@@ -225,6 +229,11 @@ impl WireState {
                         "PERMISSION_DENIED",
                         "Remote keyboard/mouse permission is not granted",
                     ));
+                }
+                if matches!(envelope.message.union, Some(message::Union::KeyEvent(_) | message::Union::MouseEvent(_)))
+                    && sessions::core(&snapshot.session_id).is_some_and(|core| core.lc.read().unwrap().view_only.v)
+                {
+                    return Err(BridgeError::new("VIEW_ONLY", "Keyboard and mouse input are disabled in view-only mode"));
                 }
             }
             if !envelope.permit.human {
@@ -244,7 +253,8 @@ impl WireState {
             }
             Ok(()) => {
                 if !envelope.permit.human {
-                    use hbb_common::message_proto::ControlKey;
+                    let platform = sessions::get(&envelope.permit.authority.session_id)
+                        .and_then(|session| session.snapshot().platform).unwrap_or_default();
                     let modifiers = self
                         .held
                         .values()
@@ -252,22 +262,7 @@ impl WireState {
                             let Some(message::Union::KeyEvent(key)) = &m.union else {
                                 return None;
                             };
-                            let Some(key_event::Union::ControlKey(code)) = &key.union else {
-                                return None;
-                            };
-                            match code.enum_value().ok()? {
-                                ControlKey::Control | ControlKey::RControl => {
-                                    Some(ControlKey::Control.into())
-                                }
-                                ControlKey::Shift | ControlKey::RShift => {
-                                    Some(ControlKey::Shift.into())
-                                }
-                                ControlKey::Alt | ControlKey::RAlt => Some(ControlKey::Alt.into()),
-                                ControlKey::Meta | ControlKey::RWin => {
-                                    Some(ControlKey::Meta.into())
-                                }
-                                _ => None,
-                            }
+                            super::input::modifier(key, &platform).map(Into::into)
                         })
                         .collect::<Vec<_>>();
                     match &mut envelope.message.union {
