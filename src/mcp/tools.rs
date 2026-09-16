@@ -107,6 +107,12 @@ pub fn definitions() -> Vec<Tool> {
     definition::<ControlCancel>("rd_control_cancel","Cancel one pending approval request. Returns an already-final result without undoing a completed control grant.",false),
     definition::<Write>("rd_control_release","Voluntarily return control to the human, invalidate queued AI input and release held keys and buttons. Keep the binding for reading.",false),
     definition::<Capture>("rd_screen_capture","Return a native PNG. source=decoded (default) reads decoded pixels with snapshot_id for input and supports max_width/max_height/after_frame_seq; available under human control. source=remote_original requests the stock toolbar original PNG from peer >=1.4.0, requires AI control, omits resizing/frame cursor and returns no input snapshot_id. wait_ms is a maximum wait, default 0 decoded or 10000 original; original timeout does not undo sending. Optional save_path writes exactly the returned PNG to a new absolute local .png file under AI control; parent must exist and existing targets are never overwritten. Use operation_id for save/request retries. PNG limit 8 MiB.",false),
+    definition::<Read>("rd_security_get","Read peer-reported blocking/privacy/elevation state, pending outcomes, SAS support, privacy implementations and permissions. Unknown is not off; fresh=false after disconnect. No GUI optimistic values. Headless OS-login challenges use existing session_authenticate with credentials.kind=os_login. No credentials are returned.",true),
+    definition::<InputBlock>("rd_input_block_set","Explicitly block/unblock local input on stock Windows. Enabling requires keyboard and block_input permission; disabling may still be attempted for recovery after permission revocation, but the peer can deny it. wait_ms 0..30000, default 10000; stock peers report failures only, so silence remains unknown and the request lock is released after the observation window; no success acknowledgement is promised. Privacy/elevation have separate acknowledgement semantics. Returning AI control attempts an unblock; query security_get to verify. Requires AI control.",false),
+    definition::<PrivacySet>("rd_privacy_set","Enable/disable stock privacy mode. Enabling requires an implementation from security_get, peer feature/keyboard/privacy permissions and toolbar display constraints. May change remote display topology. Disable may omit implementation to use observed active implementation or stock default. wait_ms 0..30000 default 10000. AI control release attempts to turn off AI-requested privacy, without promising remote success. Read peer state after release/disconnection. Never grants remote permissions.",false),
+    definition::<Elevate>("rd_session_elevate","Request stock Windows portable elevation using mode=direct (may require local UAC consent) or mode=logon with explicit OS credentials. Single-use values are not saved or returned. Requires keyboard permission and peer that is not installed/already elevated. Empty elevation reply means awaiting service, not success; only portable_service_running=true confirms service startup. wait_ms 0..30000 default 10000; GUI consent is not bypassed.",false),
+    definition::<OsPassword>("rd_os_password_input","Type a single-use OS password into the currently focused OS login field and press Enter. Does not store credentials or authenticate RustDesk. Inspect the login screen first; activate=true first presses Enter and waits 1200 ms to reveal the password field; default false assumes it is already focused. Existing serialized keyboard input limits and revocation apply. Returns sent, not login success. For headless account login use session_authenticate with current os_login challenge.",false),
+    definition::<Write>("rd_ctrl_alt_del","Send stock secure attention sequence on Linux or Windows reporting SAS support, requiring keyboard permission, ready desktop and AI control. This is a protocol command, not three normal key presses. Returns sent with confirmed=false; inspect screen separately.",false),
     definition::<Refresh>("rd_screen_refresh","Send stock video refresh for display_id (default primary). Requires ready desktop and AI control. Old peers refresh all displays. Delivery is not proof of a new frame; observe with screen_capture after_frame_seq.",false),
     definition::<Write>("rd_session_lock","Send the stock remote lock-screen key. Requires keyboard permission, ready desktop, AI control and view-only off. Returns sent with confirmed=false; inspect the screen to verify and use normal OS authentication to unlock.",false),
     definition::<Write>("rd_session_restart","Send the stock restart request to Windows/Linux/macOS under AI control and restart permission. This may terminate applications and disconnect. The protocol has no reboot-success acknowledgement: confirmed=false, and disconnection alone proves nothing. Use session_get/reconnect for recovery; portable peers may need local reopening. Use operation_id to prevent duplicate sending.",false),
@@ -699,6 +705,29 @@ pub(super) async fn dispatch(
                 json!({"approval":session.control().cancel_approval(&permit,&p.approval_id)?}),
             ))
         }
+        "rd_security_get" => {
+            let p:Read=parse(args)?; let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::security::get(&permit)?))
+        }
+        "rd_input_block_set" | "rd_privacy_set" | "rd_session_elevate" => {
+            use crate::automation::security;
+            let value=match name {
+                "rd_input_block_set" => {let p:InputBlock=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;security::block(permit,p.enabled,wait(p.wait_ms,10000)?).await?},
+                "rd_privacy_set" => {let p:PrivacySet=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;security::privacy(permit,p.enabled,p.implementation,wait(p.wait_ms,10000)?).await?},
+                _ => {let p:Elevate=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;let credentials=match p.request {ElevationMode::Direct=>None,ElevationMode::Logon{username,password}=>Some((username,password))};security::elevate(permit,credentials,wait(p.wait_ms,10000)?).await?},
+            };
+            if value["confirmed"]==true {Ok(Reply::success(value))}
+            else if value["outcome"]=="unknown" {Ok(Reply::success(value).status("pending"))}
+            else {let mut reply=Reply::error(BridgeError::new("REMOTE_ACTION_FAILED","Peer reported an unsuccessful security action; inspect outcome and state"));reply.value["data"]=value;Ok(reply)}
+        }
+        "rd_ctrl_alt_del" => {
+            let p:Write=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            Ok(Reply::success(crate::automation::security::cad(permit).await?))
+        }
+        "rd_os_password_input" => {
+            let p:OsPassword=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            Ok(Reply::success(crate::automation::security::os_password(permit,p.password,p.activate.unwrap_or(false)).await?))
+        }
         "rd_screen_refresh" | "rd_session_lock" | "rd_session_restart" => {
             let (reference, display) = if name == "rd_screen_refresh" {
                 let p:Refresh = parse(args)?; (p.session_ref,p.display_id)
@@ -839,8 +868,8 @@ pub(super) async fn dispatch(
             let credentials = match p.credentials {
                 Credentials::Password { password } => auth::Credentials::Password(password),
                 Credentials::TwoFactor { code } => auth::Credentials::TwoFactor(code),
-                Credentials::OsLogin { username, password } => {
-                    auth::Credentials::OsLogin(username, password)
+                Credentials::OsLogin { username, password, connection_password } => {
+                    auth::Credentials::OsLogin(username, password, connection_password)
                 }
             };
             let challenge = p.challenge_id.clone();
@@ -1130,6 +1159,12 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_control_request" => shape!(ControlRequest),
         "rd_control_cancel" => shape!(ControlCancel),
         "rd_screen_capture" => shape!(Capture),
+        "rd_security_get" => shape!(Read),
+        "rd_input_block_set" => shape!(InputBlock),
+        "rd_privacy_set" => shape!(PrivacySet),
+        "rd_session_elevate" => shape!(Elevate),
+        "rd_os_password_input" => shape!(OsPassword),
+        "rd_ctrl_alt_del" => shape!(Write),
         "rd_screen_refresh" => shape!(Refresh),
         "rd_session_lock" | "rd_session_restart" => shape!(Write),
         "rd_input_send" => shape!(Input),
@@ -1148,6 +1183,7 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         let read = matches!(
             name,
             "rd_session_get"
+                | "rd_security_get"
                 | "rd_displays_get"
                 | "rd_display_modes_get"
                 | "rd_capabilities_get"
@@ -1177,6 +1213,9 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
+        "rd_security_get" => &[("state","object"),("fresh","boolean"),("scope","string"),("connection_epoch","string"),("privacy_implementations","array"),("installed","boolean|null"),("headless","boolean|null"),("permissions","object"),("auth_challenge","object|null"),("headless_login_tool","string"),("observation","string"),("cleanup","string")],
+        "rd_input_block_set" | "rd_privacy_set" | "rd_session_elevate" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("requested_enabled","boolean"),("state","object"),("outcome","string|null")],
+        "rd_ctrl_alt_del" | "rd_os_password_input" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("hint","string")],
         "rd_displays_get" => &[("displays","array"),("local_views","array"),("capture_selection","object"),("virtual_displays","object"),("layout_revision","string"),("remote_current_display","string")],
         "rd_display_modes_get" => &[("display_id","string"),("known","boolean"),("modes","array|null"),("current","object"),("original","object|null"),("custom_supported","boolean"),("unknown_hint","string")],
         "rd_connection_settings_get" | "rd_connection_settings_set" => &[("confirmed","boolean"),("delivery","string"),("state","object"),("scope","string"),("session","object"),("remote_effect_confirmed","boolean"),("ui_session_id","string"),("request_id","string"),("hint","string")],

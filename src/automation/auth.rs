@@ -18,7 +18,7 @@ pub enum Credentials {
     Password(String),
     TwoFactor(String),
     HumanTwoFactor(hbb_common::message_proto::Auth2FA),
-    OsLogin(String, String),
+    OsLogin(String, String, Option<String>),
     Human(String, String, String, bool),
 }
 impl Credentials {
@@ -34,7 +34,7 @@ impl Credentials {
         let valid = match self {
             Self::Password(p) => !p.is_empty() && p.len() <= 16384,
             Self::TwoFactor(c) => !c.is_empty() && c.len() <= 256,
-            Self::OsLogin(u, p) => !u.is_empty() && u.len() <= 256 && p.len() <= 16384,
+            Self::OsLogin(u, p, connection) => !u.is_empty() && u.len() <= 256 && p.len() <= 16384 && connection.as_ref().is_none_or(|p| !p.is_empty() && p.len() <= 16384),
             Self::Human(..) | Self::HumanTwoFactor(_) => true,
         };
         if valid {
@@ -71,6 +71,10 @@ impl Envelope {
         let valid = state.auth_challenge.as_ref().is_some_and(|c| {
             Some(&c.id) == self.challenge.as_ref() && c.kind == self.credentials.kind()
         });
+        if state.auth_challenge.as_ref().is_some_and(|c| c.fields.iter().any(|f| f=="connection_password"))
+            && matches!(&self.credentials, Credentials::OsLogin(_,_,None)) {
+            return Err(BridgeError::invalid("This OS-login challenge also requires connection_password (the RustDesk password)"));
+        }
         if !valid {
             return Err(BridgeError::new(
                 "AUTH_CHALLENGE_CHANGED",
@@ -189,7 +193,7 @@ pub async fn handle<T: InvokeUiSession>(core: &Session<T>, envelope: Envelope, p
                     Credentials::Password(password) => {
                         (String::new(), String::new(), password, false)
                     }
-                    Credentials::OsLogin(user, password) => (user, password, String::new(), false),
+                    Credentials::OsLogin(user, password, connection_password) => (user, password, connection_password.unwrap_or_default(), false),
                     Credentials::Human(user, os_password, password, remember) => {
                         (user, os_password, password, remember)
                     }

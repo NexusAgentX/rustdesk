@@ -25,3 +25,4 @@ pub mod displays;
 pub mod views;
 
 pub mod desktop;
+pub mod security;

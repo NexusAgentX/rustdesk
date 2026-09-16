@@ -75,6 +75,12 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "display_select":cap(Some(desktop && s.peer_version.as_deref().is_some_and(crate::common::is_support_multi_ui_session)),Some(true),true,true,&["rd_display_select"]),
             "display_resolution":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_display_resolution_set"]),
             "virtual_display":cap(Some(desktop && crate::automation::displays::virtual_info(&s)["supported"] == true),s.permissions.get("keyboard").copied(),true,true,&["rd_virtual_display_set"]),
+            "security_read":cap(Some(desktop),Some(true),false,false,&["rd_security_get"]),
+            "input_block":cap(Some(desktop && s.platform.as_deref()==Some("Windows")),s.permissions.get("keyboard").copied().zip(s.permissions.get("block_input").copied()).map(|(a,b)|a&&b),true,true,&["rd_input_block_set"]),
+            "privacy_mode":cap(Some(desktop && s.security.privacy_supported==Some(true) && !crate::automation::security::implementations(&s).is_empty()),s.permissions.get("keyboard").copied().zip(s.permissions.get("privacy_mode").copied()).map(|(a,b)|a&&b),true,true,&["rd_privacy_set"]),
+            "elevation":cap(Some(desktop && s.platform.as_deref()==Some("Windows") && s.security.sas_enabled==Some(false) && s.security.portable_service_running!=Some(true) && s.platform_additions["is_installed"]!=true),s.permissions.get("keyboard").copied(),true,true,&["rd_session_elevate"]),
+            "os_password":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_os_password_input"]),
+            "ctrl_alt_del":cap(Some(desktop && (s.platform.as_deref()==Some("Linux") || (s.platform.as_deref()==Some("Windows") && s.security.sas_enabled==Some(true)))),s.permissions.get("keyboard").copied(),true,true,&["rd_ctrl_alt_del"]),
             "screen_refresh":cap(Some(desktop),Some(true),true,true,&["rd_screen_refresh"]),
             "original_screenshot":cap(Some(desktop && s.peer_version.as_deref().is_some_and(|v| crate::common::is_support_screenshot_num(hbb_common::get_version_number(v)))),Some(true),true,true,&["rd_screen_capture"]),
             "session_lock":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_session_lock"]),
@@ -128,7 +134,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
                 if let Some(blockers) = result["capabilities"]["file_clipboard"]["blockers"].as_array_mut() { blockers.push(json!("file_clipboard_disabled")); }
             }
             if lc.view_only.v {
-                for key in ["keyboard_mouse", "clipboard_settings_write", "file_clipboard_settings_write", "display_resolution", "virtual_display", "session_lock"] {
+                for key in ["keyboard_mouse", "clipboard_settings_write", "file_clipboard_settings_write", "display_resolution", "virtual_display", "session_lock", "input_block", "privacy_mode", "elevation", "os_password", "ctrl_alt_del"] {
                     result["capabilities"][key]["available"] = json!(false);
                     if let Some(blockers) = result["capabilities"][key]["blockers"].as_array_mut() {
                         blockers.push(json!("view_only"));
@@ -137,7 +143,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             }
         }
     }
-    for key in ["display_resolution", "virtual_display", "session_lock", "session_restart"] { result["capabilities"][key]["scope"] = json!("remote_machine"); }
+    for key in ["display_resolution", "virtual_display", "session_lock", "session_restart", "input_block", "privacy_mode", "elevation", "os_password", "ctrl_alt_del"] { result["capabilities"][key]["scope"] = json!("remote_machine"); }
     for key in ["clipboard_settings_read", "clipboard_settings_write", "file_clipboard_settings_read", "file_clipboard_settings_write"] {
         result["capabilities"][key]["scope"] = json!("peer_preference");
     }

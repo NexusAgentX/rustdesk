@@ -78,6 +78,7 @@ pub struct SessionSnapshot {
     pub current_display: usize,
     pub resolutions: BTreeMap<usize, Vec<(i32, i32)>>,
     pub platform_additions: serde_json::Value,
+    pub security: super::security::State,
     pub layout_revision: u64,
     pub revision: u64,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -129,6 +130,7 @@ impl SessionHandle {
                     current_display: 0,
                     resolutions: BTreeMap::new(),
                     platform_additions: serde_json::Value::Null,
+                    security: Default::default(),
                     layout_revision: 0,
                     revision: 0,
                     updated_at: chrono::Utc::now(),
@@ -157,6 +159,27 @@ impl SessionHandle {
 
     pub fn snapshot(&self) -> SessionSnapshot {
         self.0.state.lock().unwrap().snapshot.clone()
+    }
+
+    pub(crate) fn security_request(&self, kind: super::security::Kind, recovery: bool) -> super::error::Result<(u64, u64)> {
+        let mut state = self.0.state.lock().unwrap();
+        let observation = state.snapshot.security.observation_mut(kind);
+        if observation.pending && !recovery {
+            return Err(super::error::BridgeError::new("OPERATION_PENDING", "A request without a remote outcome is still pending; query security state or reconnect"));
+        }
+        observation.pending = true;
+        observation.request_token += 1;
+        let sequence = (observation.sequence, observation.request_token);
+        self.notify(&mut state);
+        Ok(sequence)
+    }
+
+    pub(crate) fn security_request_finished(&self, kind: super::security::Kind, epoch: u64, token: u64) {
+        let mut state = self.0.state.lock().unwrap();
+        if state.snapshot.connection_epoch != epoch { return; }
+        let observation = state.snapshot.security.observation_mut(kind);
+        if observation.request_token == token { observation.pending = false; }
+        self.notify(&mut state);
     }
 
     pub fn control(&self) -> Arc<super::control::Authority> {
@@ -277,6 +300,7 @@ impl SessionHandle {
         state.snapshot.displays.clear();
         state.snapshot.resolutions.clear();
         state.snapshot.platform_additions = serde_json::Value::Null;
+        state.snapshot.security = Default::default();
         state.snapshot.layout_revision += 1;
         state.snapshot.last_error = None;
         state.snapshot.frame_error = None;
@@ -351,9 +375,19 @@ impl Connection {
 
     pub(crate) fn login_error(&self, error: &str) {
         self.update(|state| {
+            let os_retry = error == crate::client::LOGIN_MSG_PASSWORD_WRONG
+                && state.snapshot.auth_challenge.as_ref().is_some_and(|c| c.kind == "os_login");
+            let os_login = os_retry || matches!(error,
+                crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY
+                | crate::client::LOGIN_MSG_DESKTOP_XSESSION_FAILED
+                | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_EMPTY
+                | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG);
+            let connection_password_required = os_retry || matches!(error,
+                crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_EMPTY
+                | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG);
             state.snapshot.authenticated = false;
             state.snapshot.auth_challenge = None;
-            state.snapshot.state = if matches!(
+            state.snapshot.state = if os_login || matches!(
                 error,
                 crate::client::LOGIN_MSG_PASSWORD_EMPTY
                     | crate::client::LOGIN_MSG_PASSWORD_WRONG
@@ -371,11 +405,7 @@ impl Connection {
                 crate::client::REQUIRE_2FA | crate::client::LOGIN_MSG_2FA_WRONG
             ) {
                 "two_factor"
-            } else if matches!(
-                error,
-                crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_EMPTY
-                    | crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG
-            ) {
+            } else if os_login {
                 "os_login"
             } else {
                 "password"
@@ -386,6 +416,7 @@ impl Connection {
                     kind: kind.into(),
                     fields: match kind {
                         "two_factor" => vec!["code".into()],
+                        "os_login" if connection_password_required => vec!["username".into(), "password".into(), "connection_password".into()],
                         "os_login" => vec!["username".into(), "password".into()],
                         _ => vec!["password".into()],
                     },
@@ -408,11 +439,13 @@ impl Connection {
                     .permissions
                     .entry("keyboard".into())
                     .or_insert(true);
-                for permission in ["clipboard", "file", "restart"] {
+                for permission in ["clipboard", "file", "restart", "block_input", "privacy_mode"] {
                     state.snapshot.permissions.entry(permission.into()).or_insert(true);
                 }
             }
             state.snapshot.terminal_supported = peer.features.as_ref().map(|f| f.terminal);
+            state.snapshot.security.sas_enabled = Some(peer.sas_enabled);
+            state.snapshot.security.privacy_supported = peer.features.as_ref().map(|f| f.privacy_mode);
             state.snapshot.current_display = peer.current_display as usize;
             state.snapshot.displays = displays(&peer.displays);
             state.snapshot.platform_additions = serde_json::from_str(&peer.platform_additions).unwrap_or_default();
@@ -435,13 +468,21 @@ impl Connection {
         super::text_clipboard::observe(&self.session, clipboards);
     }
 
+    pub(crate) fn security_event(&self, event: super::security::Event) {
+        self.update(|state| state.snapshot.security.observe(event));
+    }
+
     pub(crate) fn permission(&self, permission: &PermissionInfo) {
         if let Ok(kind) = permission.permission.enum_value() {
             self.update(|state| {
                 state
                     .snapshot
                     .permissions
-                    .insert(format!("{kind:?}").to_ascii_lowercase(), permission.enabled);
+                    .insert(match kind {
+                        hbb_common::message_proto::permission_info::Permission::BlockInput => "block_input".into(),
+                        hbb_common::message_proto::permission_info::Permission::PrivacyMode => "privacy_mode".into(),
+                        _ => format!("{kind:?}").to_ascii_lowercase(),
+                    }, permission.enabled);
             });
         }
     }
@@ -998,6 +1039,59 @@ mod tests {
         let connection = session.begin(0).unwrap();
         connection.connection_error(&"错".repeat(1100));
         assert_eq!(session.snapshot().last_error.unwrap(), "错".repeat(1024));
+    }
+
+    #[test]
+    fn headless_login_challenges_distinguish_os_and_connection_passwords() {
+        let (session, _, _) = fixture();
+        let connection=session.begin(0).unwrap();
+        connection.login_error(crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY);
+        let s=session.snapshot();
+        assert_eq!(s.state,ConnectionState::AwaitingAuth);
+        let c=s.auth_challenge.unwrap();
+        assert_eq!(c.kind,"os_login");
+        assert_eq!(c.fields,vec!["username","password"]);
+        connection.login_error(crate::client::LOGIN_MSG_DESKTOP_SESSION_NOT_READY_PASSWORD_WRONG);
+        let c=session.snapshot().auth_challenge.unwrap();
+        assert!(c.fields.iter().any(|f|f=="connection_password"));
+        connection.login_error(crate::client::LOGIN_MSG_PASSWORD_WRONG);
+        assert_eq!(session.snapshot().auth_challenge.unwrap().kind,"os_login");
+        session.begin(1).unwrap().login_error(crate::client::LOGIN_MSG_PASSWORD_WRONG);
+        assert_eq!(session.snapshot().auth_challenge.unwrap().kind,"password");
+    }
+
+    #[test]
+    fn security_permissions_notifications_and_recovery_are_epoch_scoped() {
+        use super::super::security::{Event, Kind};
+        use hbb_common::message_proto::{permission_info::Permission, BackNotification, back_notification::BlockInputState};
+        let (session, mut peer, _) = fixture();
+        peer.platform="Windows".into();
+        let old=session.begin(0).unwrap();
+        for permission in [Permission::BlockInput,Permission::PrivacyMode] {
+            old.permission(&PermissionInfo {permission:permission.into(),enabled:false,..Default::default()});
+        }
+        old.authenticated(&peer);
+        assert_eq!(session.snapshot().permissions.get("block_input"),Some(&false));
+        assert_eq!(session.snapshot().permissions.get("privacy_mode"),Some(&false));
+        let first=session.security_request(Kind::Block,false).unwrap();
+        assert!(session.security_request(Kind::Block,false).is_err());
+        let recovery=session.security_request(Kind::Block,true).unwrap();
+        assert!(recovery>first);
+        session.security_request_finished(Kind::Block,0,first.1);
+        assert!(session.snapshot().security.block.pending);
+        session.security_request_finished(Kind::Block,0,recovery.1);
+        assert!(!session.snapshot().security.block.pending);
+        assert_eq!(session.snapshot().security.block.enabled,None);
+        assert!(session.security_request(Kind::Block,false).is_ok());
+        let mut notification=BackNotification::new();
+        notification.set_block_input_state(BlockInputState::BlkOffSucceeded);
+        old.security_event(Event::Back(notification));
+        assert_eq!(session.snapshot().security.block.enabled,Some(false));
+        assert!(!session.snapshot().security.block.pending);
+        session.begin(1).unwrap();
+        old.security_event(Event::Portable(true));
+        assert_eq!(session.snapshot().security.portable_service_running,None);
+        assert_eq!(session.snapshot().security.block.enabled,None);
     }
 
     #[test]

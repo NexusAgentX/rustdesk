@@ -44,7 +44,7 @@ params!(Authenticate { session_ref: String, operation_id: Option<String>, challe
 pub enum Credentials {
     Password { password: String },
     TwoFactor { code: String },
-    OsLogin { username: String, password: String },
+    OsLogin { username: String, password: String, connection_password: Option<String> },
 }
 params!(Reconnect { session_ref: String, operation_id: Option<String>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(ControlRequest { session_ref: String, operation_id: Option<String>, reason: Option<String>, wait_ms: Option<u64> });
@@ -53,6 +53,13 @@ params!(ControlCancel { session_ref: String, operation_id: Option<String>, appro
 #[serde(rename_all = "snake_case")]
 pub enum CaptureSource { Decoded, RemoteOriginal }
 params!(Refresh { session_ref: String, operation_id: Option<String>, display_id: Option<String> });
+params!(InputBlock { session_ref: String, operation_id: Option<String>, enabled: bool, wait_ms: Option<u64> });
+params!(PrivacySet { session_ref: String, operation_id: Option<String>, enabled: bool, implementation: Option<String>, wait_ms: Option<u64> });
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag="mode", rename_all="snake_case", deny_unknown_fields)]
+pub enum ElevationMode { Direct, Logon { username: String, password: String } }
+params!(Elevate { session_ref: String, operation_id: Option<String>, request: ElevationMode, wait_ms: Option<u64> });
+params!(OsPassword { session_ref: String, operation_id: Option<String>, password: String, activate: Option<bool> });
 params!(Capture {
     session_ref: String,
     operation_id: Option<String>,

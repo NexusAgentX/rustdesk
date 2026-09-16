@@ -618,11 +618,19 @@ impl<T: InvokeUiSession> Remote<T> {
             #[cfg(all(feature = "automation", target_os = "macos"))]
             Data::AutomationDisconnect(permit) => {
                 if permit.check().is_ok() {
-                    self.automation_wire.release_all(peer).await;
+                    if let Some(error) = self.automation_wire.release_all(peer).await {
+                        log::warn!("Automation disconnect cleanup failed: {}", error);
+                        if let Some(observer) = &self.automation { observer.connection_error(&error); }
+                    }
                     self.send_close_reason(peer, "").await; return false;
                 }
             }
             Data::Close => {
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                if let Some(error) = self.automation_wire.release_all(peer).await {
+                    log::warn!("Automation close cleanup failed: {}", error);
+                    if let Some(observer) = &self.automation { observer.connection_error(&error); }
+                }
                 self.send_close_reason(peer, "").await;
                 return false;
             }
@@ -2063,6 +2071,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::ElevationResponse(err)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation { observer.security_event(crate::automation::security::Event::Elevation(err.is_empty())); }
                         if err.is_empty() {
                             self.handler.msgbox("wait-uac", "", "", "");
                         } else {
@@ -2072,6 +2082,8 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                     }
                     Some(misc::Union::PortableServiceRunning(b)) => {
+                        #[cfg(all(feature = "automation", target_os = "macos"))]
+                        if let Some(observer) = &self.automation { observer.security_event(crate::automation::security::Event::Portable(b)); }
                         self.handler.portable_service_running(b);
                         if self.elevation_requested && b {
                             self.handler.msgbox(
@@ -2295,6 +2307,10 @@ impl<T: InvokeUiSession> Remote<T> {
     }
 
     async fn handle_back_notification(&mut self, notification: BackNotification) -> bool {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        self.automation_wire.observe_security(&notification);
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if let Some(observer) = &self.automation { observer.security_event(crate::automation::security::Event::Back(notification.clone())); }
         match notification.union {
             Some(back_notification::Union::BlockInputState(state)) => {
                 self.handle_back_msg_block_input(

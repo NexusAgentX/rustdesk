@@ -33,6 +33,8 @@ pub struct Envelope {
 #[derive(Default)]
 pub struct WireState {
     held: HashMap<String, Message>,
+    block_owned: bool,
+    privacy_owned: Option<String>,
 }
 
 pub fn is_input(message: &Message) -> bool {
@@ -121,6 +123,15 @@ pub fn reject_unmarked<T: InvokeUiSession>(core: &Session<T>, message: &Message)
 }
 
 impl WireState {
+    pub fn observe_security(&mut self, notification: &hbb_common::message_proto::BackNotification) {
+        use hbb_common::message_proto::back_notification::{self, BlockInputState as B, PrivacyModeState as P};
+        match &notification.union {
+            Some(back_notification::Union::BlockInputState(s)) if s.enum_value()==Ok(B::BlkOffSucceeded) => self.block_owned=false,
+            Some(back_notification::Union::PrivacyModeState(s)) if matches!(s.enum_value(),Ok(P::PrvOffSucceeded | P::PrvOffByPeer)) => self.privacy_owned=None,
+            _=>{},
+        }
+    }
+
     pub fn observe_manual(&mut self, message: &Message) {
         self.track(message);
     }
@@ -164,6 +175,16 @@ impl WireState {
 
     pub async fn release_all(&mut self, peer: &mut Stream) -> Option<String> {
         let mut error = None;
+        if self.block_owned {
+            if peer.send(&super::security::block_message(false)).await.is_err() {
+                error = Some("Input blocking cleanup could not be sent; remote state is unknown".into());
+            } else { self.block_owned = false; }
+        }
+        if let Some(implementation) = &self.privacy_owned {
+            if peer.send(&super::security::privacy_message(false, implementation.clone())).await.is_err() {
+                error = Some("Privacy cleanup could not be sent; remote state is unknown".into());
+            } else { self.privacy_owned = None; }
+        }
         for (_, message) in self.held.drain() {
             if peer.send(&message).await.is_err() {
                 error = Some(
@@ -223,6 +244,12 @@ impl WireState {
                 }
                 if matches!(envelope.message.union, Some(message::Union::Cliprdr(_))) { super::file_clipboard::check(&envelope.permit, true)?; }
                 if let Some(message::Union::Misc(misc)) = &envelope.message.union {
+                    match &misc.union {
+                        Some(hbb_common::message_proto::misc::Union::ElevationRequest(_)) => super::security::elevation_check(&envelope.permit)?,
+                        Some(hbb_common::message_proto::misc::Union::TogglePrivacyMode(t)) => super::security::privacy_check(&envelope.permit,t.on,&t.impl_key)?,
+                        Some(hbb_common::message_proto::misc::Union::Option(o)) if o.block_input.value()!=0 => super::security::block_check(&envelope.permit,o.block_input==hbb_common::message_proto::option_message::BoolOption::Yes.into())?,
+                        _ => {},
+                    }
                     if matches!(misc.union, Some(hbb_common::message_proto::misc::Union::RestartRemoteDevice(_))) {
                         super::desktop::restart_check(&envelope.permit)?;
                     }
@@ -235,6 +262,11 @@ impl WireState {
                 }
                 if matches!(envelope.message.union, Some(message::Union::Clipboard(_) | message::Union::MultiClipboards(_))) {
                     super::text_clipboard::check(&envelope.permit, true, true)?;
+                }
+                if let Some(message::Union::KeyEvent(key)) = &envelope.message.union {
+                    if matches!(&key.union, Some(key_event::Union::ControlKey(k)) if k.enum_value()==Ok(hbb_common::message_proto::ControlKey::CtrlAltDel)) {
+                        super::security::cad_check(&envelope.permit)?;
+                    }
                 }
                 if matches!(
                     envelope.message.union,
@@ -288,6 +320,15 @@ impl WireState {
                     }
                 }
                 self.track(&envelope.message);
+                if !envelope.permit.human {
+                    if let Some(message::Union::Misc(misc))=&envelope.message.union {
+                        match &misc.union {
+                            Some(hbb_common::message_proto::misc::Union::Option(o)) if o.block_input==hbb_common::message_proto::option_message::BoolOption::Yes.into() => self.block_owned=true,
+                            Some(hbb_common::message_proto::misc::Union::TogglePrivacyMode(t)) if t.on => self.privacy_owned=Some(t.impl_key.clone()),
+                            _=>{},
+                        }
+                    }
+                }
                 peer.send(&envelope.message).await.map(|_| 1).map_err(|_| {
                     BridgeError::new("DELIVERY_UNKNOWN", "Remote transport failed during send")
                 })
@@ -399,6 +440,25 @@ mod tests {
             state.track(&message);
         }
         assert!(state.held.is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_sends_stock_security_cleanup_and_does_not_repeat_after_delivery() {
+        use hbb_common::{protobuf::Message as _, message_proto::{misc,option_message::BoolOption}};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address=listener.local_addr().unwrap();
+        let (local, accepted)=tokio::join!(tokio::net::TcpStream::connect(address),listener.accept());
+        let (remote, remote_address)=accepted.unwrap();
+        let mut local=Stream::from(local.unwrap(),address);
+        let mut remote=Stream::from(remote,remote_address);
+        let mut wire=WireState {block_owned:true,privacy_owned:Some("privacy_mode_impl_mag".into()),..Default::default()};
+        assert!(wire.release_all(&mut local).await.is_none());
+        let first=Message::parse_from_bytes(&remote.next().await.unwrap().unwrap()).unwrap();
+        let second=Message::parse_from_bytes(&remote.next().await.unwrap().unwrap()).unwrap();
+        assert!(matches!(first.union,Some(message::Union::Misc(m)) if matches!(&m.union,Some(misc::Union::Option(o)) if o.block_input==BoolOption::No.into())));
+        assert!(matches!(second.union,Some(message::Union::Misc(m)) if matches!(&m.union,Some(misc::Union::TogglePrivacyMode(t)) if !t.on && t.impl_key=="privacy_mode_impl_mag")));
+        assert!(wire.release_all(&mut local).await.is_none());
+        assert!(tokio::time::timeout(Duration::from_millis(20),remote.next()).await.is_err());
     }
 
     #[tokio::test]
