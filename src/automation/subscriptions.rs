@@ -137,3 +137,23 @@ pub fn detach(session: &str) {
 pub fn forget(session: &str) {
     states().lock().unwrap().remove(session);
 }
+
+pub fn selection(permit: &Permit) -> serde_json::Value {
+    let gui = sessions::core(&permit.authority.session_id).map(|c| c.ui_handler.automation_display_ids().iter().map(ToString::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let states=states().lock().unwrap();
+    let state=states.get(&permit.authority.session_id);
+    serde_json::json!({"ai":state.filter(|s|s.binding.as_deref()==Some(permit.binding_id())).map(|s|s.ai.iter().map(ToString::to_string).collect::<Vec<_>>()).unwrap_or_default(),"gui":gui,"scope":"binding","effective":"union_of_ai_and_gui","capture_adds_requested_displays":true})
+}
+fn set(permit:&Permit, displays:&[i32], ai:bool)->Result<Message>{
+    permit.check()?;
+    let session=sessions::get(&permit.authority.session_id).ok_or_else(||BridgeError::new("SESSION_CLOSED","Desktop closed"))?;
+    let snapshot=session.snapshot();
+    let mut states=states().lock().unwrap();
+    let desired=states.entry(snapshot.session_id).or_insert_with(||Desired{gui:std::iter::once(snapshot.current_display as i32).collect(),..Default::default()});
+    if desired.binding.as_deref()!=Some(permit.binding_id()){desired.ai.clear();desired.binding=Some(permit.binding_id().into());}
+    if ai {desired.ai=displays.iter().copied().collect();}else{desired.gui=displays.iter().copied().collect();}
+    desired.managed=true;
+    Ok(message(desired.gui.union(&desired.ai).copied().collect()))
+}
+pub fn set_ai(permit:&Permit,displays:&[i32])->Result<Message>{set(permit,displays,true)}
+pub fn set_gui(permit:&Permit,displays:&[i32])->Result<Message>{set(permit,displays,false)}

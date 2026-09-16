@@ -600,7 +600,7 @@ impl<T: InvokeUiSession> Remote<T> {
             #[cfg(all(feature = "automation", target_os = "macos"))]
             Data::Automation(envelope) => self.automation_wire.send(envelope, peer).await,
             #[cfg(all(feature = "automation", target_os = "macos"))]
-            Data::AutomationWake => {},
+            Data::AutomationWake => self.sync_automation_layout(),
             #[cfg(all(feature = "automation", target_os = "macos"))]
             Data::AutomationLogin(envelope) => crate::automation::auth::handle(&self.handler, envelope, peer).await,
             #[cfg(all(feature = "automation", target_os = "macos"))]
@@ -1149,10 +1149,14 @@ impl<T: InvokeUiSession> Remote<T> {
         let mut config: PeerConfig = self.handler.load_config();
         let mut transfer_metas = TransferSerde::default();
         for job in self.read_jobs.iter() {
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            if crate::automation::files::owns_native(&self.handler, job.id()) { continue; }
             let json_str = serde_json::to_string(&job.gen_meta()).unwrap_or_default();
             transfer_metas.read_jobs.push(json_str);
         }
         for job in self.write_jobs.iter() {
+            #[cfg(all(feature = "automation", target_os = "macos"))]
+            if crate::automation::files::owns_native(&self.handler, job.id()) { continue; }
             let json_str = serde_json::to_string(&job.gen_meta()).unwrap_or_default();
             transfer_metas.write_jobs.push(json_str);
         }
@@ -2208,6 +2212,7 @@ impl<T: InvokeUiSession> Remote<T> {
                     #[cfg(all(feature = "automation", target_os = "macos"))]
                     if let Some(observer) = &self.automation {
                         observer.layout(&pi.displays);
+                        observer.platform_additions(&pi.platform_additions);
                     }
                     #[cfg(all(feature = "automation", target_os = "macos"))]
                     self.sync_automation_layout();
@@ -2498,12 +2503,17 @@ impl<T: InvokeUiSession> Remote<T> {
 
                 #[cfg(target_os = "macos")]
                 if clipboard::platform::unix::macos::should_handle_msg(&clip) {
+                    #[cfg(feature = "automation")]
+                    let is_offer = matches!(&clip, clipboard::ClipboardFile::FormatList { .. });
                     if let Err(e) = ContextSend::proc(|context| -> ResultType<()> {
                         context
                             .server_clip_file(self.client_conn_id, clip)
                             .map_err(|e| e.into())
                     }) {
                         log::error!("failed to handle cliprdr msg: {}", e);
+                    } else {
+                        #[cfg(feature = "automation")]
+                        if is_offer { crate::automation::file_clipboard::observe(&self.handler); }
                     }
                 } else {
                     out_msgs = unix_file_clip::serve_clip_messages(

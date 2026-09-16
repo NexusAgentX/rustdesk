@@ -282,6 +282,14 @@ pub fn set_text_clipboard_with_owner_sync(text: &str, side: ClipboardSide) -> Re
     clipboard_ctx.set_with_owner_marker_for_linux(&data)
 }
 
+#[cfg(feature = "automation")]
+pub fn set_local_file_clipboard(paths: Vec<String>) -> ResultType<()> {
+    let mut ctx = CLIPBOARD_CTX.lock().unwrap();
+    if ctx.is_none() { *ctx = Some(ClipboardContext::new()?); }
+    let ctx = ctx.as_mut().ok_or_else(|| hbb_common::anyhow::anyhow!("Clipboard is unavailable"))?;
+    ctx.set(&[ClipboardData::FileUrl(paths)])
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn update_clipboard(multi_clipboards: Vec<Clipboard>, side: ClipboardSide) {
     std::thread::spawn(move || {

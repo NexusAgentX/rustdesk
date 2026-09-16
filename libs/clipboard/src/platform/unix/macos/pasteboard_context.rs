@@ -49,7 +49,18 @@ struct ContextInfo {
     handle: thread::JoinHandle<()>,
 }
 
+struct DirectPaste {
+    id: String,
+    conn_id: i32,
+    target: std::path::PathBuf,
+    pending: bool,
+    cancelled: bool,
+    error: Option<String>,
+}
+
 pub struct PasteboardContext {
+    offered: Option<(i32, i32)>,
+    direct: Option<DirectPaste>,
     pasteboard: Id<NSPasteboard>,
     observer: Arc<Mutex<PasteObserver>>,
     tx_handle: Option<ContextInfo>,
@@ -90,7 +101,43 @@ impl CliprdrServiceContext for PasteboardContext {
         self.paste_task.lock().unwrap().progress_percent()
     }
 
+    fn request_paste(&mut self, request_id: &str, conn_id: i32, target: &Path) -> Result<(), CliprdrError> {
+        let fail = |s: &str| CliprdrError::InvalidRequest { description: s.into() };
+        let Some((offered_conn, format_id)) = self.offered else { return Err(fail("No remote file clipboard offer")); };
+        if offered_conn != conn_id { return Err(fail("File clipboard belongs to another connection")); }
+        if self.direct.as_ref().is_some_and(|r| r.pending) || !self.paste_task.lock().unwrap().is_finished() {
+            return Err(fail("A paste request is still outstanding"));
+        }
+        if !target.is_absolute() || !target.is_dir() { return Err(fail("Paste target must be an existing absolute directory")); }
+        self.direct = Some(DirectPaste { id: request_id.into(), conn_id, target: target.into(), pending: true, cancelled: false, error: None });
+        if let Err(e) = send_data(conn_id, ClipboardFile::FormatDataRequest { requested_format_id: format_id }) {
+            self.direct = None;
+            return Err(fail(&e.to_string()));
+        }
+        Ok(())
+    }
+
+    fn paste_status(&self) -> Option<crate::PasteStatus> {
+        self.direct.as_ref().map(|r| {
+            if r.cancelled || r.error.is_some() || r.pending {
+                crate::PasteStatus { request_id: Some(r.id.clone()), state: if r.cancelled { "cancelled" } else if r.error.is_some() { "failed" } else { "awaiting_metadata" }, progress: None, error: r.error.clone() }
+            } else {
+                let mut status = self.paste_task.lock().unwrap().status().unwrap_or(crate::PasteStatus { request_id: None, state: "unknown", progress: None, error: None });
+                status.request_id = Some(r.id.clone());
+                status
+            }
+        })
+    }
+
+    fn cancel_paste(&mut self, request_id: &str) -> bool {
+        if self.direct.as_ref().is_some_and(|r| r.id == request_id) {
+            self.cancel();
+            true
+        } else { false }
+    }
+
     fn cancel(&mut self) {
+        if let Some(request) = &mut self.direct { request.cancelled = true; }
         self.paste_task.lock().unwrap().cancel();
     }
 }
@@ -166,7 +213,16 @@ impl PasteboardContext {
     }
 
     // Just removing the file can also make paste option in the context menu disappear.
-    fn empty_clipboard_(&mut self, _conn_id: i32) -> bool {
+    fn empty_clipboard_(&mut self, conn_id: i32) -> bool {
+        if conn_id == 0 || self.offered.is_some_and(|(id, _)| id == conn_id) {
+            self.offered = None;
+        }
+        if self.direct.as_ref().is_some_and(|r| conn_id == 0 || r.conn_id == conn_id) {
+            self.cancel();
+            // The connection/clipboard was cleared; a missing metadata reply must
+            // not keep every later paste busy forever.
+            if let Some(request) = &mut self.direct { request.pending = false; }
+        }
         self.tx_remove_file
             .as_ref()
             .map(|tx| tx.send("".to_string()).ok());
@@ -197,6 +253,9 @@ impl PasteboardContext {
     fn server_clip_file_(&mut self, conn_id: i32, msg: ClipboardFile) -> Result<(), CliprdrError> {
         match msg {
             ClipboardFile::FormatList { format_list } => {
+                if self.direct.as_ref().is_some_and(|r| r.pending) {
+                    return Err(CliprdrError::InvalidRequest { description: "File paste metadata is still pending".into() });
+                }
                 let temp_files = Self::temp_files_count();
                 if temp_files >= 3 {
                     // The temp files should be 0 or 1 in normal case.
@@ -215,13 +274,31 @@ impl PasteboardContext {
                         description: "previous file paste task is not finished".to_string(),
                     });
                 }
+                drop(task_lock);
                 self.handle_format_list(conn_id, format_list)?;
+                if self.direct.as_ref().is_some_and(|r| r.cancelled) { self.direct = None; }
             }
             ClipboardFile::FormatDataResponse {
                 msg_flags,
                 format_data,
             } => {
-                self.handle_format_data_response(conn_id, msg_flags, format_data)?;
+                if let Some(request) = self.direct.as_mut().filter(|r| r.pending && r.conn_id == conn_id) {
+                    request.pending = false;
+                    if request.cancelled { return Ok(()); }
+                    let result = if msg_flags == 0x1 { FileDescription::parse_file_descriptors(format_data, conn_id) }
+                        else { Err(CliprdrError::InvalidRequest { description: "Remote rejected file clipboard metadata".into() }) };
+                    match result {
+                        Ok(files) => self.paste_task.lock().unwrap().start(request.target.clone(), files),
+                        Err(e) => { request.error = Some(e.to_string()); return Err(e); }
+                    }
+                } else if self.direct.as_ref().is_some_and(|r| r.cancelled && r.conn_id == conn_id) {
+                    // Ignore a late response after clipboard/connection cleanup.
+                    return Ok(());
+                } else {
+                    // A Finder paste is a separate operation from a direct request.
+                    self.direct = None;
+                    self.handle_format_data_response(conn_id, msg_flags, format_data)?;
+                }
             }
             ClipboardFile::FileContentsResponse {
                 msg_flags,
@@ -237,7 +314,7 @@ impl PasteboardContext {
     }
 
     fn handle_format_list(
-        &self,
+        &mut self,
         conn_id: i32,
         format_list: Vec<(i32, String)>,
     ) -> Result<(), CliprdrError> {
@@ -263,6 +340,7 @@ impl PasteboardContext {
             };
 
             autoreleasepool(|_| self.set_clipboard_item(tx_handle, conn_id, file_descriptor_id))?;
+            self.offered = Some((conn_id, file_descriptor_id));
         } else {
             return Err(CliprdrError::CommonError {
                 description: "pasteboard context is not inited".to_string(),
@@ -371,6 +449,7 @@ impl PasteboardContext {
     }
 
     fn handle_try_empty(&mut self, conn_id: i32) {
+        if self.offered.is_some_and(|(id, _)| id == conn_id) { self.offered = None; }
         log::debug!("empty_clipboard called");
         let ret = self.empty_clipboard_(conn_id);
         log::debug!(
@@ -419,6 +498,8 @@ pub fn create_pasteboard_context() -> ResultType<Box<PasteboardContext>> {
     observer.init(handle_paste_result)?;
     let (tx, rx) = channel();
     let mut context = Box::new(PasteboardContext {
+        offered: None,
+        direct: None,
         pasteboard,
         observer: Arc::new(Mutex::new(observer)),
         tx_handle: None,

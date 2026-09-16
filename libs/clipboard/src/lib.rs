@@ -48,6 +48,14 @@ pub struct ProgressPercent {
     pub is_failed: bool,
 }
 
+#[derive(Serialize)]
+pub struct PasteStatus {
+    pub request_id: Option<String>,
+    pub state: &'static str,
+    pub progress: Option<f64>,
+    pub error: Option<String>,
+}
+
 // to-do: This trait may be removed, because unix file copy paste does not need it.
 /// Ability to handle Clipboard File from remote rustdesk client
 ///
@@ -64,6 +72,12 @@ pub trait CliprdrServiceContext: Send + Sync {
     fn server_clip_file(&mut self, conn_id: i32, msg: ClipboardFile) -> Result<(), CliprdrError>;
     /// get the progress of the paste task.
     fn get_progress_percent(&self) -> Option<ProgressPercent>;
+    /// Request a native file paste without simulating a file-manager UI event.
+    fn request_paste(&mut self, _request_id: &str, _conn_id: i32, _target: &std::path::Path) -> Result<(), CliprdrError> {
+        Err(CliprdrError::InvalidRequest { description: "Direct local paste is unsupported on this platform".into() })
+    }
+    fn paste_status(&self) -> Option<PasteStatus> { None }
+    fn cancel_paste(&mut self, _request_id: &str) -> bool { false }
     /// cancel the paste task.
     fn cancel(&mut self);
 }

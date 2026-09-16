@@ -49,6 +49,7 @@ pub struct Display {
     pub scale: f64,
     pub cursor_embedded: bool,
     pub online: bool,
+    pub original_resolution: Option<(i32, i32)>,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -75,6 +76,8 @@ pub struct SessionSnapshot {
     pub permissions: BTreeMap<String, bool>,
     pub displays: Vec<Display>,
     pub current_display: usize,
+    pub resolutions: BTreeMap<usize, Vec<(i32, i32)>>,
+    pub platform_additions: serde_json::Value,
     pub layout_revision: u64,
     pub revision: u64,
     pub updated_at: chrono::DateTime<chrono::Utc>,
@@ -124,6 +127,8 @@ impl SessionHandle {
                     permissions: BTreeMap::new(),
                     displays: vec![],
                     current_display: 0,
+                    resolutions: BTreeMap::new(),
+                    platform_additions: serde_json::Value::Null,
                     layout_revision: 0,
                     revision: 0,
                     updated_at: chrono::Utc::now(),
@@ -138,6 +143,16 @@ impl SessionHandle {
             frames_changed,
             cache,
         }))
+    }
+
+    pub fn selection_changed(&self) {
+        let mut state = self.0.state.lock().unwrap();
+        state.snapshot.layout_revision += 1;
+        self.invalidate_frames(&mut state);
+        self.notify(&mut state);
+        let id = state.snapshot.session_id.clone();
+        drop(state);
+        super::wire::wake(&id);
     }
 
     pub fn snapshot(&self) -> SessionSnapshot {
@@ -260,6 +275,8 @@ impl SessionHandle {
         state.snapshot.terminal_supported = None;
         state.snapshot.permissions.clear();
         state.snapshot.displays.clear();
+        state.snapshot.resolutions.clear();
+        state.snapshot.platform_additions = serde_json::Value::Null;
         state.snapshot.layout_revision += 1;
         state.snapshot.last_error = None;
         state.snapshot.frame_error = None;
@@ -392,6 +409,8 @@ impl Connection {
             state.snapshot.terminal_supported = peer.features.as_ref().map(|f| f.terminal);
             state.snapshot.current_display = peer.current_display as usize;
             state.snapshot.displays = displays(&peer.displays);
+            state.snapshot.platform_additions = serde_json::from_str(&peer.platform_additions).unwrap_or_default();
+            if let Some(modes) = peer.resolutions.as_ref() { state.snapshot.resolutions.insert(peer.current_display as usize, modes.resolutions.iter().map(|r| (r.width, r.height)).collect()); }
             state.snapshot.layout_revision += 1;
             state.snapshot.last_error = None;
             state.snapshot.state = match state.snapshot.kind {
@@ -421,10 +440,33 @@ impl Connection {
         }
     }
 
+    pub(crate) fn platform_additions(&self, value: &str) {
+        let incoming = if value.is_empty() { serde_json::Map::new() } else {
+            match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value) {
+                Ok(value) => value,
+                Err(error) => { hbb_common::log::warn!("Invalid display platform additions: {error}"); return; }
+            }
+        };
+        self.update(|state| {
+            // Display-service PeerInfo contains a partial update, not login facts.
+            if !state.snapshot.platform_additions.is_object() { state.snapshot.platform_additions = serde_json::json!({}); }
+            if let Some(current) = state.snapshot.platform_additions.as_object_mut() {
+                for key in ["rustdesk_virtual_displays", "amyuni_virtual_displays"] { current.remove(key); }
+                current.extend(incoming);
+            }
+        });
+    }
+
     pub(crate) fn layout(&self, incoming: &[DisplayInfo]) {
         let incoming = displays(incoming);
         self.update(|state| {
             if state.snapshot.displays != incoming {
+                // A resolution change can send SwitchDisplay (with modes) before
+                // PeerInfo (geometry only). Keep modes for the same display identity.
+                let retained = incoming.iter().filter(|d| state.snapshot.displays.iter().any(|old|
+                    old.id == d.id && old.name == d.name && old.online && d.online
+                )).map(|d| d.id).collect::<BTreeSet<_>>();
+                state.snapshot.resolutions.retain(|id, _| retained.contains(id));
                 state.snapshot.displays = incoming;
                 self.layout_changed(state);
             }
@@ -453,10 +495,12 @@ impl Connection {
                 d.width = display.width;
                 d.height = display.height;
                 d.cursor_embedded = display.cursor_embedded;
+                d.original_resolution = display.original_resolution.as_ref().map(|r| (r.width, r.height));
                 if *d != before {
                     self.layout_changed(state);
                 }
                 state.snapshot.current_display = display.display as usize;
+                if let Some(modes) = display.resolutions.as_ref() { state.snapshot.resolutions.insert(display.display as usize, modes.resolutions.iter().map(|r| (r.width, r.height)).collect()); }
             }
         });
     }
@@ -577,6 +621,7 @@ fn displays(incoming: &[DisplayInfo]) -> Vec<Display> {
             scale: d.scale,
             cursor_embedded: d.cursor_embedded,
             online: d.online,
+            original_resolution: d.original_resolution.as_ref().map(|r| (r.width, r.height)),
         })
         .collect()
 }
@@ -847,6 +892,60 @@ mod tests {
         });
         next.authenticated(&peer);
         assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&false));
+    }
+
+    #[test]
+    fn geometry_update_does_not_erase_a_preceding_switch_mode_report() {
+        let (session,mut peer,_)=fixture();
+        peer.displays[0].online=true;
+        let connection=session.begin(0).unwrap();connection.authenticated(&peer);
+        connection.switch_display(&SwitchDisplay {
+            display:0,width:3840,height:2160,
+            resolutions:Some(hbb_common::message_proto::SupportedResolutions {
+                resolutions:vec![hbb_common::message_proto::Resolution{width:1920,height:1080,..Default::default()}],..Default::default()
+            }).into(),..Default::default()
+        });
+        peer.displays[0].width=3840;peer.displays[0].height=2160;
+        connection.layout(&peer.displays);
+        assert_eq!(session.snapshot().resolutions[&0],vec![(1920,1080)]);
+        peer.displays[0].name="different monitor".into();
+        connection.layout(&peer.displays);
+        assert!(!session.snapshot().resolutions.contains_key(&0));
+    }
+
+    #[test]
+    fn display_platform_updates_preserve_installation_facts_and_clear_removed_monitors() {
+        let (session,mut peer,_)=fixture();
+        peer.platform_additions=r#"{"is_installed":true,"idd_impl":"amyuni_idd","amyuni_virtual_displays":1}"#.into();
+        let connection=session.begin(0).unwrap();connection.authenticated(&peer);
+        connection.platform_additions(r#"{"idd_impl":"amyuni_idd","amyuni_virtual_displays":2}"#);
+        assert_eq!(session.snapshot().platform_additions["is_installed"],true);
+        assert_eq!(session.snapshot().platform_additions["amyuni_virtual_displays"],2);
+        connection.platform_additions("{}");
+        assert_eq!(session.snapshot().platform_additions["is_installed"],true);
+        assert!(session.snapshot().platform_additions["amyuni_virtual_displays"].is_null());
+    }
+
+    #[test]
+    fn selection_invalidates_same_geometry_frames_and_retains_modes_until_reconnect() {
+        let (session, mut peer, image) = fixture();
+        peer.resolutions = Some(hbb_common::message_proto::SupportedResolutions {
+            resolutions: vec![hbb_common::message_proto::Resolution { width:1920,height:1080,..Default::default() }],
+            ..Default::default()
+        }).into();
+        session.set_capture_enabled(true);
+        let connection=session.begin(0).unwrap();connection.authenticated(&peer);
+        connection.frame(0,&image,true);
+        let before=connection.layout_revision();
+        session.selection_changed();
+        connection.frame_at_layout(0,&image,true,before);
+        assert_eq!(session.read_frame(0,None).err(),Some(FrameError::NoFrame));
+        assert_eq!(session.snapshot().resolutions[&0],vec![(1920,1080)]);
+        connection.frame(0,&image,true);
+        assert!(session.read_frame(0,None).is_ok());
+        session.begin(1).unwrap();
+        assert!(session.snapshot().resolutions.is_empty());
+        assert!(session.snapshot().platform_additions.is_null());
     }
 
     #[test]

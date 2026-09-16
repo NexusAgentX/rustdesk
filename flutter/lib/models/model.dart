@@ -351,6 +351,14 @@ class FfiModel with ChangeNotifier {
         setConnectionType(peerId, evt['secure'] == 'true',
             evt['direct'] == 'true', evt['stream_type'] ?? '');
         resetRestartReconnectState();
+      } else if (name == 'automation_display_select') {
+        final selected = bind.automationDisplayApply(
+            requestId: evt['request_id'] ?? '', sessionId: sessionId);
+        final display = int.tryParse(selected);
+        if (display != null) {
+          switchToNewDisplay(display, sessionId, peerId);
+          notifyListeners();
+        }
       } else if (name == 'automation_follow_display') {
         if (bind.mainGetLocalOption(key: 'mcp-follow-display') == 'Y') {
           final display = int.tryParse(evt['display_idx'] ?? '');

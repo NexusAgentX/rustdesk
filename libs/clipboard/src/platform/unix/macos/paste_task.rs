@@ -231,6 +231,15 @@ impl PasteTask {
         })
     }
 
+    pub fn status(&self) -> Option<crate::PasteStatus> {
+        self.handle.lock().unwrap().as_ref().map(|h| crate::PasteStatus {
+            request_id: None,
+            state: if h.progress.is_canceled { "cancelled" } else if h.progress.error.is_some() { "failed" } else if h.is_finished() { "completed" } else { "running" },
+            progress: if h.progress.total_size == 0 { None } else { Some(h.progress.current_size as f64 / h.progress.total_size as f64) },
+            error: h.progress.error.as_ref().map(ToString::to_string),
+        })
+    }
+
     pub fn is_finished(&self) -> bool {
         self.handle
             .lock()

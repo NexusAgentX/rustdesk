@@ -3251,3 +3251,11 @@ pub fn automation_gui_visibility(session_id: SessionID, visible: bool, minimized
     #[cfg(all(feature = "automation", target_os = "macos"))]
     crate::automation::gui::set_visibility(session_id, visible, minimized);
 }
+
+/// Validate and apply a pending MCP display selection in its destination view.
+pub fn automation_display_apply(request_id: String, session_id: SessionID) -> SyncReturn<String> {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return SyncReturn(crate::automation::displays::apply_view(&request_id, session_id).map(|d|d.to_string()).unwrap_or_default());
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    SyncReturn(String::new())
+}

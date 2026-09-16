@@ -541,6 +541,24 @@ impl FlutterHandler {
     ///
     /// * `name` - The name of the event.
     /// * `event` - Fields of the event content.
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub fn automation_display_views(&self) -> Vec<serde_json::Value> {
+        self.session_handlers.read().unwrap().iter().map(|(id,h)| json!({"ui_session_id":id.to_string(),"display_ids":h.displays.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect()
+    }
+
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub fn automation_display_ids(&self) -> Vec<i32> {
+        self.session_handlers.read().unwrap().values().flat_map(|h|h.displays.iter().map(|d|*d as i32)).collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+    }
+
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    pub fn automation_set_display_view(&self, view: &SessionID, displays: &[i32]) -> bool {
+        let mut handlers=self.session_handlers.write().unwrap();
+        let Some(handler)=handlers.get_mut(view) else {return false;};
+        handler.displays=displays.iter().map(|d|*d as usize).collect();
+        true
+    }
+
     pub fn push_event<V>(&self, name: &str, event: &[(&str, V)], excludes: &[&SessionID])
     where
         V: Sized + Serialize + Clone,

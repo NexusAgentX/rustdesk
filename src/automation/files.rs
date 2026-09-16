@@ -32,6 +32,7 @@ pub struct Envelope {
     permit: Permit,
     data: Box<Data>,
     write: bool,
+    parent_job: Option<String>,
     active: Arc<AtomicBool>,
     reply: Arc<Mutex<Option<oneshot::Sender<Result<()>>>>>,
 }
@@ -82,7 +83,9 @@ fn check(permit: &Permit, write: bool) -> Result<()> {
 }
 pub fn receive(envelope: Envelope) -> Option<Data> {
     let result = if envelope.active.load(Ordering::Acquire) {
-        check(&envelope.permit, envelope.write)
+        check(&envelope.permit, envelope.write).and_then(|()| {
+            if let Some(parent) = &envelope.parent_job { check_parent(&envelope.permit, parent) } else { Ok(()) }
+        })
     } else {
         Err(BridgeError::new(
             "CANCELLED",
@@ -96,6 +99,9 @@ pub fn receive(envelope: Envelope) -> Option<Data> {
     accepted.then(|| *envelope.data)
 }
 async fn send(permit: Permit, data: Data, write: bool) -> Result<()> {
+    send_for_parent(permit, data, write, None).await
+}
+async fn send_for_parent(permit: Permit, data: Data, write: bool, parent_job: Option<String>) -> Result<()> {
     check(&permit, write)?;
     let core = sessions::core(&permit.authority.session_id)
         .ok_or_else(|| BridgeError::new("GUI_UNAVAILABLE", "File window is unavailable"))?;
@@ -118,6 +124,7 @@ async fn send(permit: Permit, data: Data, write: bool) -> Result<()> {
             permit,
             data: Box::new(data),
             write,
+            parent_job,
             active: active.0.clone(),
             reply: Arc::new(Mutex::new(Some(reply))),
         }))
@@ -543,7 +550,7 @@ pub async fn transfer(
     let id = add(
         &permit,
         "transfer",
-        json!({"source_path":source,"destination_path":destination,"direction":if download {"download"} else {"upload"},"conflict_policy":conflict,"finished_bytes":0}),
+        json!({"source_path":source,"destination_path":destination,"direction":if download {"download"} else {"upload"},"conflict_policy":conflict,"include_hidden":hidden,"finished_bytes":0}),
     )?;
     let mut guard = DispatchGuard {
         id: id.clone(),
@@ -579,6 +586,49 @@ pub async fn transfer(
     {
         fail(&id, &e);
     }
+    guard.committed = true;
+    Ok(id)
+}
+/// Native GUI restoration must not silently restart jobs owned by an MCP binding.
+pub fn owns_native<T: InvokeUiSession>(core: &Session<T>, native: i32) -> bool {
+    let Some(session) = sessions::for_core(core) else { return false; };
+    let sid = session.snapshot().session_id;
+    jobs().lock().unwrap().values().any(|j| j.permit.authority.session_id == sid && j.native_id == native)
+}
+pub async fn resume(permit: Permit, previous_id: &str) -> Result<String> {
+    check(&permit, true)?;
+    let snapshot = sessions::get(&permit.authority.session_id)
+        .ok_or_else(|| BridgeError::new("SESSION_CLOSED", "File session closed"))?.snapshot();
+    if !snapshot.peer_version.as_deref().is_some_and(crate::is_support_file_transfer_resume) {
+        return Err(BridgeError::new("UNSUPPORTED", "Peer does not support file transfer resume"));
+    }
+    let previous = {
+        let all = jobs().lock().unwrap();
+        let j = all.get(previous_id).ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Previous file job expired"))?;
+        authorized(j, &permit)?;
+        if j.value["kind"] != "transfer" || !matches!(j.value["state"].as_str(), Some("interrupted" | "failed" | "cancelled")) {
+            return Err(BridgeError::new("NOT_READY", "Only stopped transfer jobs can be resumed"));
+        }
+        j.value.clone()
+    };
+    let source = previous["source_path"].as_str().ok_or_else(|| BridgeError::new("INVALID_STATE", "Missing source path"))?.to_owned();
+    let destination = previous["destination_path"].as_str().ok_or_else(|| BridgeError::new("INVALID_STATE", "Missing destination path"))?.to_owned();
+    let download = previous["direction"] == "download";
+    let hidden = previous["include_hidden"].as_bool().unwrap_or(false);
+    let id = add(&permit, "transfer", json!({"source_path":source,"destination_path":destination,"direction":previous["direction"],"conflict_policy":previous["conflict_policy"],"include_hidden":hidden,"finished_bytes":0,"resumed_from":previous_id,"resume_mode":"stock_partial_digest"}))?;
+    let mut guard = DispatchGuard { id: id.clone(), committed: false };
+    if let Err(error) = copy_empty_directories(&permit, &source, &destination, download, hidden).await {
+        fail(&id, &error); guard.committed = true; return Ok(id);
+    }
+    let native = jobs().lock().unwrap().get(&id).map(|j| j.native_id)
+        .ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Resumed job expired"))?;
+    let result = async {
+        // Re-enumerate from file zero; stock size/mtime digest matching resumes eligible
+        // .download files and skips identical completed files. It is not a content hash.
+        send(permit.clone(), Data::AddJob((native, fs::JobType::Generic, source, destination, 0, hidden, download)), true).await?;
+        send(permit, Data::ResumeJob((native, download)), true).await
+    }.await;
+    if let Err(error) = result { fail(&id, &error); }
     guard.committed = true;
     Ok(id)
 }
@@ -841,6 +891,165 @@ pub fn disconnected(session_id: &str, epoch: u64) {
     }
 }
 
+#[derive(Clone, Copy, serde::Deserialize)]
+#[cfg_attr(feature = "mcp", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ManageAction { CreateDirectory, Rename, RemoveFile, RemoveDirectory }
+fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\\', ':', '\0']) {
+        return Err(BridgeError::invalid("new_name must be a single file name"));
+    }
+    Ok(())
+}
+fn validate_manage_path(path: &str, windows: bool) -> Result<()> {
+    validate_path(path, false)?;
+    let normalized = if windows { path.replace('\\', "/") } else { path.to_owned() };
+    let parts = normalized.split('/').filter(|s| !s.is_empty()).collect::<Vec<_>>();
+    let absolute = if windows {
+        (normalized.as_bytes().get(1) == Some(&b':') && normalized.as_bytes().get(2) == Some(&b'/')) || normalized.starts_with("//")
+    } else { normalized.starts_with('/') };
+    let root_parts = if windows && normalized.starts_with("//") { 2 } else if windows { 1 } else { 0 };
+    if !absolute || parts.len() <= root_parts || parts.iter().any(|s| matches!(*s, "." | "..")) {
+        return Err(BridgeError::invalid("Use an absolute path below a filesystem root without dot segments"));
+    }
+    Ok(())
+}
+fn check_parent(permit: &Permit, parent: &str) -> Result<()> {
+    check(permit, true)?;
+    let all = jobs().lock().unwrap();
+    let j = all.get(parent).ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Management job expired"))?;
+    if terminal(j) { return Err(BridgeError::new("CANCELLED", "Management job stopped")); }
+    Ok(())
+}
+async fn management_step(permit: &Permit, parent: &str, action: ManageAction, path: String, local: bool, new_name: &str) -> Result<()> {
+    check_parent(permit, parent)?;
+    if local {
+        let p = permit.clone(); let root = parent.to_owned(); let name = new_name.to_owned();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            check_parent(&p, &root)?;
+            let result = match action {
+                ManageAction::CreateDirectory => fs::create_dir(&path),
+                ManageAction::Rename => fs::rename_file(&path, &name),
+                ManageAction::RemoveFile => fs::remove_file(&path),
+                ManageAction::RemoveDirectory => std::fs::remove_dir(&path).map_err(Into::into),
+            };
+            result.map_err(|e| BridgeError::new("FILE_ERROR", e.to_string()))
+        }).await.map_err(|_| BridgeError::new("INTERNAL_ERROR", "File management worker failed"))??;
+    } else {
+        let id = add(permit, "management_step", json!({"path":path}))?;
+        let mut guard = DispatchGuard { id: id.clone(), committed: false };
+        let native = jobs().lock().unwrap().get(&id).map(|j| j.native_id)
+            .ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Management step expired"))?;
+        let data = match action {
+            ManageAction::CreateDirectory => Data::CreateDir((native, path, true)),
+            ManageAction::Rename => Data::RenameFile((native, path, new_name.into(), true)),
+            ManageAction::RemoveFile => Data::RemoveFile((native, path, 0, true)),
+            ManageAction::RemoveDirectory => {
+                let mut action = FileAction::new();
+                // Stock recursive=true only removes empty subdirectories and can hide failures.
+                action.set_remove_dir(hbb_common::message_proto::FileRemoveDir { id: native, path, recursive: false, ..Default::default() });
+                let mut message = Message::new(); message.set_file_action(action); Data::Message(message)
+            }
+        };
+        send_for_parent(permit.clone(), data, true, Some(parent.to_owned())).await?;
+        let result = get(permit, &id, None, 10000, 0, 1).await?;
+        if result["state"] != "completed" {
+            return Err(BridgeError::new("FILE_ERROR", "File management step failed or its result is unknown").details(result));
+        }
+        guard.committed = true;
+        jobs().lock().unwrap().remove(&id);
+    }
+    if let Some(job) = jobs().lock().unwrap().get_mut(parent) {
+        job.value["completed_steps"] = json!(job.value["completed_steps"].as_u64().unwrap_or(0) + 1);
+        touch(job);
+    }
+    Ok(())
+}
+async fn manage_run(permit: &Permit, id: &str, action: ManageAction, path: String, local: bool, recursive: bool, new_name: &str) -> Result<()> {
+    if !matches!(action, ManageAction::RemoveDirectory) || !recursive {
+        return management_step(permit, id, action, path, local, new_name).await;
+    }
+    let windows = if local { cfg!(windows) } else {
+        sessions::get(&permit.authority.session_id).is_some_and(|s| s.snapshot().platform.as_deref() == Some("Windows"))
+    };
+    let separator = if windows { "\\" } else { "/" };
+    // A caller-supplied root must also be a real directory, not a directory symlink.
+    let normalized = if windows { path.replace('\\', "/") } else { path.clone() };
+    let normalized = normalized.trim_end_matches('/');
+    let (parent, leaf) = normalized.rsplit_once('/').ok_or_else(|| BridgeError::invalid("Missing parent directory"))?;
+    let parent = format!("{}/", parent);
+    let listing = directory(permit.clone(), parent, local, true).await?;
+    let result = get(permit, &listing, None, 10000, 0, 1).await?;
+    if result["state"] != "completed" {
+        return Err(BridgeError::new("FILE_ERROR", "Could not verify recursive deletion root").details(result));
+    }
+    let entries = jobs().lock().unwrap().remove(&listing).map(|j| j.entries)
+        .ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Root listing expired"))?;
+    let root = entries.iter().find(|e| e["name"].as_str().is_some_and(|name| if windows { name.eq_ignore_ascii_case(leaf) } else { name == leaf }));
+    if root.map(|e| e["entry_type"].as_u64()) != Some(Some(0)) {
+        return Err(BridgeError::new("UNSAFE_PATH", "Recursive deletion root must be an existing directory, not a symlink"));
+    }
+    let mut pending = vec![(path, false, 0usize)];
+    let mut count = 0;
+    while let Some((path, visited, depth)) = pending.pop() {
+        check_parent(permit, id)?;
+        if visited {
+            management_step(permit, id, ManageAction::RemoveDirectory, path, local, "").await?;
+            continue;
+        }
+        if depth > 64 { return Err(BridgeError::new("LIMIT_EXCEEDED", "Directory depth exceeds 64")); }
+        let listing = directory(permit.clone(), path.clone(), local, true).await?;
+        let result = get(permit, &listing, None, 10000, 0, 1).await?;
+        if result["state"] != "completed" {
+            return Err(BridgeError::new("FILE_ERROR", "Directory listing failed or timed out").details(result));
+        }
+        let entries = jobs().lock().unwrap().remove(&listing).map(|j| j.entries)
+            .ok_or_else(|| BridgeError::new("JOB_NOT_FOUND", "Directory listing expired"))?;
+        count += entries.len();
+        if count > 10000 { return Err(BridgeError::new("LIMIT_EXCEEDED", "Recursive deletion exceeds 10000 entries")); }
+        pending.push((path.clone(), true, depth));
+        for entry in entries {
+            let name = entry["name"].as_str().ok_or_else(|| BridgeError::new("INVALID_RESPONSE", "Missing file name"))?;
+            validate_name(name)?;
+            let child = format!("{}{}{}", path.trim_end_matches(['/', '\\']), separator, name);
+            match entry["entry_type"].as_u64() {
+                Some(0) => pending.push((child, false, depth + 1)),
+                Some(2 | 4 | 5) => management_step(permit, id, ManageAction::RemoveFile, child, local, "").await?,
+                _ => return Err(BridgeError::new("UNSUPPORTED", "Cannot recursively delete this file type")),
+            }
+        }
+    }
+    Ok(())
+}
+pub fn manage(permit: Permit, action: ManageAction, path: String, local: bool, recursive: bool, new_name: Option<String>) -> Result<String> {
+    check(&permit, true)?;
+    let windows = if local { cfg!(windows) } else {
+        sessions::get(&permit.authority.session_id).is_some_and(|s| s.snapshot().platform.as_deref() == Some("Windows"))
+    };
+    validate_manage_path(&path, windows)?;
+    if matches!(action, ManageAction::Rename) { validate_name(new_name.as_deref().unwrap_or(""))?; }
+    else if new_name.is_some() { return Err(BridgeError::invalid("new_name is only valid for rename")); }
+    if recursive && !matches!(action, ManageAction::RemoveDirectory) {
+        return Err(BridgeError::invalid("recursive is only valid for remove_directory"));
+    }
+    let id = add(&permit, "management", json!({"path":path,"location":if local {"local"} else {"remote"},"completed_steps":0}))?;
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let result = manage_run(&permit, &job_id, action, path, local, recursive, new_name.as_deref().unwrap_or("")).await;
+        let mut all = jobs().lock().unwrap();
+        if let Some(job) = all.get_mut(&job_id) {
+            if !terminal(job) {
+                match result {
+                    Ok(()) => job.value["state"] = json!("completed"),
+                    Err(error) => { job.value["state"] = json!("failed"); job.value["error"] = json!(error); }
+                }
+                touch(job);
+            }
+        }
+    });
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,6 +1121,15 @@ mod tests {
         assert!(relative_directory("C:\\root", "C:\\rooted\\bad", true).is_err());
         assert!(relative_directory("C:\\root", "C:\\root\\..\\bad", true).is_err());
         assert!(relative_directory("/root", "/elsewhere", false).is_err());
+    }
+
+    #[test]
+    fn management_paths_reject_roots_and_traversal() {
+        for p in ["/", "/a/../b", "relative/path", "/a/./b"] { assert!(validate_manage_path(p, false).is_err(), "{p}"); }
+        for p in ["C:\\", "C:relative", "C:\\a\\..\\b", "\\\\server\\share"] { assert!(validate_manage_path(p, true).is_err(), "{p}"); }
+        assert!(validate_manage_path("C:\\测试\\file", true).is_ok());
+        assert!(validate_manage_path("/tmp/test", false).is_ok());
+        for p in ["", ".", "..", "../escape", "a\\b", "C:evil"] { assert!(validate_name(p).is_err()); }
     }
 
     #[test]

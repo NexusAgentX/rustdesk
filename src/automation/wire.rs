@@ -217,6 +217,15 @@ impl WireState {
                         "Remote session is not ready for input",
                     ));
                 }
+                if matches!(envelope.message.union, Some(message::Union::Cliprdr(_))) { super::file_clipboard::check(&envelope.permit, true)?; }
+                if let Some(message::Union::Misc(misc)) = &envelope.message.union {
+                    if matches!(misc.union, Some(hbb_common::message_proto::misc::Union::ChangeDisplayResolution(_) | hbb_common::message_proto::misc::Union::ChangeResolution(_) | hbb_common::message_proto::misc::Union::ToggleVirtualDisplay(_))) {
+                        super::displays::remote_write_check(&envelope.permit)?;
+                    }
+                    if let Some(hbb_common::message_proto::misc::Union::Option(option)) = &misc.union {
+                        if option.enable_file_transfer.value() != 0 { super::file_clipboard::check(&envelope.permit, false)?; }
+                    }
+                }
                 if matches!(envelope.message.union, Some(message::Union::Clipboard(_) | message::Union::MultiClipboards(_))) {
                     super::text_clipboard::check(&envelope.permit, true, true)?;
                 }

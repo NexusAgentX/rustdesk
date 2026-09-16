@@ -64,12 +64,24 @@ fn definition<T: JsonSchema + 'static>(
 }
 pub fn definitions() -> Vec<Tool> {
     vec![
+    definition::<Read>("rd_displays_get","Read remote display topology, original dimensions, known modes, AI capture selection, local view selection and stock virtual-display support. Display IDs are valid only for the reported layout_revision; driver_installed is unknown because the stock protocol does not report it.",true),
+    definition::<DisplayModes>("rd_display_modes_get","Read cached supported modes for one online display without changing it. If known=false, switch from another display to this display with target=local_view; the stock peer reports modes only when the selected display changes. Reconnect if no other display exists. Current geometry is in capture pixels; modes are the stock OS resolution values and scale is reported separately.",true),
+    definition::<DisplaySelect>("rd_display_select","Select numeric display_id or all for target=capture (this binding's AI capture subscription) or local_view (one GUI window). Effective capture is the union of AI and GUI needs; subsequent screen_capture calls add their requested display. With multiple GUI views specify ui_session_id from displays_get. Local viewing is independent of the follow-AI preference. Selection invalidates old screenshot coordinates. wait_ms observes local GUI application, minimum 1000/default 10000; capture has no remote acknowledgement. Selecting one local display requests its supported modes without applying saved resolution preferences.",false),
+    definition::<DisplayResolutionSet>("rd_display_resolution_set","Request mode=set with width/height, restore_original, or fit_local (exact local main-display size). Setting physical screens requires a reported supported mode; restore_original uses the original resolution reported by the peer even when the mode cache is unknown; custom sizes require a virtual display reported with original 0x0. Requires keyboard permission and AI control. This changes the remote machine's display; wait_ms default 10000 observes geometry, with confirmed=false meaning unknown outcome. Does not save a new peer resolution preference.",false),
+    definition::<VirtualDisplaySet>("rd_virtual_display_set","Add, remove, or remove_all stock Windows virtual displays. Requires installed peer reporting an IDD implementation, keyboard permission, AI control and privacy mode off. Adding MAY INSTALL A DRIVER through the stock peer. RustDesk IDD add/remove requires index 1..4; Amyuni adds/removes one and requires index omitted; remove_all always omits index. wait_ms default 10000 observes reported counts/indices; false confirmation is unknown outcome, not proof of failure.",false),
     definition::<Read>("rd_clipboard_settings_get","Read text clipboard synchronization preference, effective state, and permission for a desktop session. Does not read the local clipboard.",true),
     definition::<ClipboardSet>("rd_clipboard_settings_set","Set text synchronization enabled explicitly. Persists the peer preference and sends the option to the connected peer; requires AI control. Disabling does not clear clipboard text.",false),
     definition::<ClipboardRead>("rd_clipboard_read","Read the latest text received from this binding's remote clipboard synchronization, optionally waiting for a changed revision. Unknown means no observed text; this is not an active remote clipboard pull. Cache expires after five minutes and across binding/connection changes.",true),
     definition::<ClipboardWrite>("rd_clipboard_write","Send up to 1 MiB of UTF-8 text to the remote clipboard without changing the local clipboard. Requires enabled synchronization and AI control. Optional paste sends Ctrl+V (Command+V on macOS) after delay_ms (default 200, max 30000); neither sending nor delay proves the application pasted successfully.",false),
     definition::<ClipboardType>("rd_clipboard_type","Type up to 16 KiB of explicit text, or if omitted read the local system clipboard and type its text, using the existing input path. This corresponds to Send clipboard keystrokes; it does not set the remote clipboard. Windows types one character every 10 ms; total input pacing/waits must fit 30 seconds, otherwise split the text or use clipboard paste. Requires keyboard permission and AI control.",false),
     definition::<FileList>("rd_file_list","List a local or remote directory through a visible file_transfer session. Returns a directory job with up to 1000 entries; use file_job_get next_offset for further pages. Empty remote path requests the remote home directory. One directory request per session at a time; timeout does not mean an empty directory.",true),
+    definition::<Write>("rd_file_clipboard_cancel","Request cancellation of this binding's native local file paste. Completed files may remain; file_clipboard_get reports its final state. Does not cancel a remote application's Paste operation.",false),
+    definition::<Read>("rd_file_clipboard_get","Read file copy-paste settings, platform support and whether a recent remote file offer was received for this binding. Native file clipboard is shared by local applications and enabled desktop sessions.",true),
+    definition::<ClipboardSet>("rd_file_clipboard_set","Set explicit enabled for file copy-paste in the peer preference. Requires file and keyboard permissions and AI control; independent of text clipboard synchronization.",false),
+    definition::<FileClipboardCopy>("rd_file_clipboard_copy","With paths, replace the local SYSTEM clipboard with 1..128 existing absolute file/directory paths; native synchronization publishes them to enabled sessions. Without paths, send Copy to the remote focused selection; select this local desktop tab first. File-manager selection determines files; consult file_clipboard_get for a received remote offer. Copy delivery does not prove a file was selected.",false),
+    definition::<FileClipboardPaste>("rd_file_clipboard_paste","Paste native clipboard files. With local_directory, request native download of recently copied remote files into an existing absolute local directory (macOS only); existing names are disambiguated by the native paste implementation. Without it, send Paste to remote focus after delay_ms (default 500). wait_ms observes local paste only, default 10000. Clipboard is global; remote application paste result is unknown until independently checked.",false),
+    definition::<FileJobWrite>("rd_file_job_resume","Explicitly resume a retained interrupted, failed, or cancelled transfer after restoring the file connection and AI control. Creates a new job in the same binding; original remains unchanged. Stock size/mtime digest and surviving partial files determine byte-offset resume; otherwise files restart or follow conflict policy. This is not content-hash validation. Jobs expire after 300 seconds and do not survive controller restart. Cancel may already have removed partial files.",false),
+    definition::<FileManage>("rd_file_manage","Create directories, rename within the same parent, remove files, or remove directories locally or remotely. Requires absolute non-root paths and AI control in a file_transfer session. recursive defaults false; true deletes all descendants including hidden files, without following listed symlinks. Deletion is permanent; cancellation cannot undo completed steps. new_name is a single name, and rename may replace an existing destination according to the OS. Returns a tracked job; inspect its final state.",false),
     definition::<FileTransfer>("rd_file_transfer","Upload or download 1..32 files/directories using the stock file-transfer protocol. destination_path is the complete target path, not just its parent. Returns tracked jobs, not a claim of completion. Default conflict policy is ask; use file_conflict_resolve. Partial files can remain after cancellation. Requires AI control and a file_transfer session.",false),
     definition::<Read>("rd_file_jobs","List this binding's retained directory and transfer jobs without changing them.",true),
     definition::<FileJobGet>("rd_file_job_get","Read one file job, optionally waiting for completion or a revision change. Page completed directory entries using offset and limit. Job completion is based on protocol events; interrupted/cancelled transfers may leave partial files.",true),
@@ -151,6 +163,29 @@ pub(super) async fn dispatch(
 ) -> Result<Reply> {
     let agent = &client.agent;
     match name {
+        "rd_displays_get" => {
+            let p:Read=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::displays::get(&permit)?))
+        }
+        "rd_display_modes_get" => {
+            let p:DisplayModes=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,false)?;
+            Ok(Reply::success(crate::automation::displays::modes(&permit,&p.display_id)?))
+        }
+        "rd_display_select" => {
+            let p:DisplaySelect=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            let value=crate::automation::displays::select(permit,&p.display_id,p.target,p.ui_session_id,wait(p.wait_ms,10000)?).await?;
+            let confirmed=value["confirmed"]==true;Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))
+        }
+        "rd_display_resolution_set" => {
+            let p:DisplayResolutionSet=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            let value=crate::automation::displays::resolution(permit,&p.display_id,p.mode,p.width,p.height,wait(p.wait_ms,10000)?).await?;
+            let confirmed=value["confirmed"]==true;Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))
+        }
+        "rd_virtual_display_set" => {
+            let p:VirtualDisplaySet=parse(args)?;let (_,permit)=api::resolve(agent,&p.session_ref,true)?;
+            let value=crate::automation::displays::virtual_change(permit,p.action,p.index,wait(p.wait_ms,10000)?).await?;
+            let confirmed=value["confirmed"]==true;Ok(Reply::success(value).status(if confirmed {"completed"}else{"pending"}))
+        }
         "rd_clipboard_settings_get" => {
             let p: Read = parse(args)?;
             let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
@@ -262,6 +297,48 @@ pub(super) async fn dispatch(
             .await?;
             let job = crate::automation::files::get(&permit, &id, None, ms, 0, 1000).await?;
             Ok(Reply::success(json!({"job":job})))
+        }
+        "rd_file_clipboard_cancel" => {
+            let p: Write = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            Ok(Reply::success(crate::automation::file_clipboard::cancel_local(&permit)?))
+        }
+        "rd_file_clipboard_get" => {
+            let p: Read = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
+            Ok(Reply::success(json!({"settings":crate::automation::file_clipboard::settings(&permit)?})))
+        }
+        "rd_file_clipboard_set" => {
+            let p: ClipboardSet = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            Ok(Reply::success(json!({"settings":crate::automation::file_clipboard::set_enabled(permit,p.enabled).await?})))
+        }
+        "rd_file_clipboard_copy" => {
+            let p: FileClipboardCopy = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            Ok(Reply::success(crate::automation::file_clipboard::copy(permit,p.paths).await?))
+        }
+        "rd_file_clipboard_paste" => {
+            let p: FileClipboardPaste = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            let ms = wait(p.wait_ms,10000)?;
+            let delay = wait(p.delay_ms,500)?;
+            let result = if let Some(path) = p.local_directory { crate::automation::file_clipboard::paste_local(permit,path,ms).await? }
+                else { crate::automation::file_clipboard::paste_remote(permit,delay).await? };
+            Ok(Reply::success(result))
+        }
+        "rd_file_job_resume" => {
+            let p: FileJobWrite = parse(args)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            let id = crate::automation::files::resume(permit.clone(), &p.job_id).await?;
+            Ok(Reply::success(json!({"job":crate::automation::files::get(&permit,&id,None,0,0,1).await?})))
+        }
+        "rd_file_manage" => {
+            let p: FileManage = parse(args)?;
+            let ms = wait(p.wait_ms, 0)?;
+            let (_, permit) = api::resolve(agent, &p.session_ref, true)?;
+            let id = crate::automation::files::manage(permit.clone(), p.action, p.path, matches!(p.location, FileLocation::Local), p.recursive.unwrap_or(false), p.new_name)?;
+            Ok(Reply::success(json!({"job":crate::automation::files::get(&permit,&id,None,ms,0,1).await?})))
         }
         "rd_file_transfer" => {
             let p: FileTransfer = parse(args)?;
@@ -951,6 +1028,11 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         }};
     }
     match name {
+        "rd_displays_get" => shape!(Read),
+        "rd_display_modes_get" => shape!(DisplayModes),
+        "rd_display_select" => shape!(DisplaySelect),
+        "rd_display_resolution_set" => shape!(DisplayResolutionSet),
+        "rd_virtual_display_set" => shape!(VirtualDisplaySet),
         "rd_session_open" => shape!(Open),
         "rd_session_attach" => shape!(Attach),
         "rd_session_get" => shape!(Get),
@@ -961,6 +1043,13 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_clipboard_write" => shape!(ClipboardWrite),
         "rd_clipboard_type" => shape!(ClipboardType),
         "rd_file_list" => shape!(FileList),
+        "rd_file_clipboard_cancel" => shape!(Write),
+        "rd_file_clipboard_get" => shape!(Read),
+        "rd_file_clipboard_set" => shape!(ClipboardSet),
+        "rd_file_clipboard_copy" => shape!(FileClipboardCopy),
+        "rd_file_clipboard_paste" => shape!(FileClipboardPaste),
+        "rd_file_job_resume" => shape!(FileJobWrite),
+        "rd_file_manage" => shape!(FileManage),
         "rd_file_transfer" => shape!(FileTransfer),
         "rd_file_job_get" => shape!(FileJobGet),
         "rd_file_job_cancel" => shape!(FileJobWrite),
@@ -989,7 +1078,10 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         let read = matches!(
             name,
             "rd_session_get"
+                | "rd_displays_get"
+                | "rd_display_modes_get"
                 | "rd_capabilities_get"
+                | "rd_file_clipboard_get"
                 | "rd_file_jobs"
                 | "rd_file_list"
                 | "rd_file_job_get"
@@ -1015,11 +1107,17 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
 
 fn output_schema(name: &str) -> Map<String, Value> {
     let fields: &[(&str, &str)] = match name {
-        "rd_clipboard_settings_get" | "rd_clipboard_settings_set" => &[("settings", "object")],
+        "rd_displays_get" => &[("displays","array"),("local_views","array"),("capture_selection","object"),("virtual_displays","object"),("layout_revision","string"),("remote_current_display","string")],
+        "rd_display_modes_get" => &[("display_id","string"),("known","boolean"),("modes","array|null"),("current","object"),("original","object|null"),("custom_supported","boolean"),("unknown_hint","string")],
+        "rd_display_select" | "rd_display_resolution_set" | "rd_virtual_display_set" => &[("delivery","string"),("confirmed","boolean"),("state","object"),("requested","object"),("scope","string"),("driver_installation_may_occur","boolean")],
+        "rd_file_clipboard_cancel" => &[("job_id","string"),("delivery","string"),("partial_files_may_remain","boolean")],
+        "rd_file_clipboard_copy" => &[("delivery","string"),("clipboard_scope","string"),("remote_delivery","string"),("application_result","string")],
+        "rd_file_clipboard_paste" => &[("delivery","string"),("clipboard_scope","string"),("application_result","string"),("paste","object|null")],
+        "rd_file_clipboard_get" | "rd_file_clipboard_set" | "rd_clipboard_settings_get" | "rd_clipboard_settings_set" => &[("settings", "object")],
         "rd_clipboard_read" => &[("clipboard", "object")],
         "rd_clipboard_write" => &[("delivery", "string"), ("paste", "object|null")],
         "rd_clipboard_type" => &[("delivery", "string"), ("sent_events", "integer")],
-        "rd_file_list" | "rd_file_job_get" | "rd_file_job_cancel" | "rd_file_conflict_resolve" => {
+        "rd_file_job_resume" | "rd_file_manage" | "rd_file_list" | "rd_file_job_get" | "rd_file_job_cancel" | "rd_file_conflict_resolve" => {
             &[("job", "object")]
         }
         "rd_file_jobs" | "rd_file_transfer" => &[("jobs", "array")],

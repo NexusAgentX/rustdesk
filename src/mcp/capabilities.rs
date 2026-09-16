@@ -54,6 +54,12 @@ pub(super) fn view(session: &SessionHandle) -> Value {
     let cap = |supported, permission, write, ready, tools: &[&str]| {
         capability(&s, &c, supported, permission, write, ready, tools)
     };
+    let file_clipboard_supported = desktop && cfg!(any(windows, feature="unix-file-copy-paste")) && s.peer_version.as_deref().is_some_and(|v| hbb_common::get_version_number(v) >= hbb_common::get_version_number("1.3.8"));
+    let file_clipboard_permission = match (s.permissions.get("file"), s.permissions.get("keyboard")) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    };
     let mut result = json!({
         "session_ref":c.session_ref,
         "peer":{"platform":s.platform,"version":s.peer_version,"authenticated":s.authenticated,
@@ -61,9 +67,17 @@ pub(super) fn view(session: &SessionHandle) -> Value {
         "capabilities":{
             "session_read":cap(Some(true),Some(true),false,false,&["rd_session_get","rd_capabilities_get"]),
             "session_lifecycle":cap(Some(true),Some(true),true,false,&["rd_session_disconnect","rd_session_reconnect","rd_session_close"]),
+            "display_read":cap(Some(desktop),Some(true),false,false,&["rd_displays_get","rd_display_modes_get"]),
+            "display_select":cap(Some(desktop && s.peer_version.as_deref().is_some_and(crate::common::is_support_multi_ui_session)),Some(true),true,true,&["rd_display_select"]),
+            "display_resolution":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_display_resolution_set"]),
+            "virtual_display":cap(Some(desktop && crate::automation::displays::virtual_info(&s)["supported"] == true),s.permissions.get("keyboard").copied(),true,true,&["rd_virtual_display_set"]),
             "screen_capture":cap(Some(desktop),Some(true),false,true,&["rd_screen_capture"]),
             "file_read":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),false,true,&["rd_file_list","rd_file_jobs","rd_file_job_get"]),
-            "file_write":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),true,true,&["rd_file_transfer","rd_file_job_cancel","rd_file_conflict_resolve"]),
+            "file_write":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),true,true,&["rd_file_manage","rd_file_transfer","rd_file_job_cancel","rd_file_conflict_resolve"]),
+            "file_resume":cap(Some(s.kind == SessionKind::FileTransfer && s.peer_version.as_deref().is_some_and(crate::is_support_file_transfer_resume)),s.permissions.get("file").copied(),true,true,&["rd_file_job_resume"]),
+            "file_clipboard_settings_read":cap(Some(desktop),Some(true),false,false,&["rd_file_clipboard_get"]),
+            "file_clipboard_settings_write":cap(Some(file_clipboard_supported),file_clipboard_permission,true,true,&["rd_file_clipboard_set"]),
+            "file_clipboard":cap(Some(file_clipboard_supported),file_clipboard_permission,true,true,&["rd_file_clipboard_copy","rd_file_clipboard_paste","rd_file_clipboard_cancel"]),
             "text_clipboard":cap(Some(desktop),s.permissions.get("clipboard").copied(),false,true,&["rd_clipboard_read"]),
             "clipboard_settings_read":cap(Some(desktop),Some(true),false,false,&["rd_clipboard_settings_get"]),
             "clipboard_settings_write":cap(Some(desktop),s.permissions.get("clipboard").copied(),true,true,&["rd_clipboard_settings_set"]),
@@ -81,7 +95,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "operation_limit":256,
             "wait_timeout":"Observation timeout does not cancel or replay a previously sent request. A stored pending result has unknown final outcome; query current session or terminal state.",
             "completion":"completed describes the individual tool contract; input delivery is not remote application completion.",
-            "settings":{"write_mode":"explicit_value","scope_required":true,"scopes":["session","peer_preference","global","local_window"]},
+            "settings":{"write_mode":"explicit_value","scope_required":true,"scopes":["session","binding","peer_preference","global","local_window","remote_machine"]},
             "credentials":"Never included in operation arguments or capability results; authentication values are single-use.",
             "future_features":"Capabilities list only implemented MCP operations. GUI-only features are not promises of MCP support."
         }
@@ -97,8 +111,16 @@ pub(super) fn view(session: &SessionHandle) -> Value {
                     }
                 }
             }
+            if lc.privacy_mode.v {
+                result["capabilities"]["virtual_display"]["available"] = json!(false);
+                if let Some(blockers) = result["capabilities"]["virtual_display"]["blockers"].as_array_mut() { blockers.push(json!("privacy_mode_active")); }
+            }
+            if lc.view_only.v || !lc.enable_file_copy_paste.v {
+                result["capabilities"]["file_clipboard"]["available"] = json!(false);
+                if let Some(blockers) = result["capabilities"]["file_clipboard"]["blockers"].as_array_mut() { blockers.push(json!("file_clipboard_disabled")); }
+            }
             if lc.view_only.v {
-                for key in ["keyboard_mouse", "clipboard_settings_write"] {
+                for key in ["keyboard_mouse", "clipboard_settings_write", "file_clipboard_settings_write", "display_resolution", "virtual_display"] {
                     result["capabilities"][key]["available"] = json!(false);
                     if let Some(blockers) = result["capabilities"][key]["blockers"].as_array_mut() {
                         blockers.push(json!("view_only"));
@@ -107,7 +129,8 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             }
         }
     }
-    for key in ["clipboard_settings_read", "clipboard_settings_write"] {
+    for key in ["display_resolution", "virtual_display"] { result["capabilities"][key]["scope"] = json!("remote_machine"); }
+    for key in ["clipboard_settings_read", "clipboard_settings_write", "file_clipboard_settings_read", "file_clipboard_settings_write"] {
         result["capabilities"][key]["scope"] = json!("peer_preference");
     }
     result

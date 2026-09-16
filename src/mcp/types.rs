@@ -159,3 +159,13 @@ params!(ClipboardRead { session_ref: String, after_revision: Option<u64>, wait_m
 params!(ClipboardSet { session_ref: String, operation_id: Option<String>, enabled: bool });
 params!(ClipboardWrite { session_ref: String, operation_id: Option<String>, text: String, paste: Option<bool>, delay_ms: Option<u64> });
 params!(ClipboardType { session_ref: String, operation_id: Option<String>, text: Option<String> });
+
+params!(FileManage { session_ref: String, operation_id: Option<String>, action: crate::automation::files::ManageAction, path: String, location: FileLocation, recursive: Option<bool>, new_name: Option<String>, wait_ms: Option<u64> });
+
+params!(FileClipboardCopy { session_ref: String, operation_id: Option<String>, paths: Option<Vec<String>> });
+params!(FileClipboardPaste { session_ref: String, operation_id: Option<String>, local_directory: Option<String>, delay_ms: Option<u64>, wait_ms: Option<u64> });
+
+params!(DisplayModes {session_ref:String, display_id:String});
+params!(DisplaySelect {session_ref:String,operation_id:Option<String>,display_id:String,target:crate::automation::displays::SelectionTarget,ui_session_id:Option<String>,wait_ms:Option<u64>});
+params!(DisplayResolutionSet {session_ref:String,operation_id:Option<String>,display_id:String,mode:crate::automation::displays::ResolutionMode,width:Option<i32>,height:Option<i32>,wait_ms:Option<u64>});
+params!(VirtualDisplaySet {session_ref:String,operation_id:Option<String>,action:crate::automation::displays::VirtualAction,index:Option<i32>,wait_ms:Option<u64>});
