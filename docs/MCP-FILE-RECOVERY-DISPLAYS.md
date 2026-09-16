@@ -1,66 +1,66 @@
-# MCP 文件管理、文件剪贴板与显示器管理
+# MCP file management, file clipboard and display management
 
-对应 [文件管理与恢复 #3](https://github.com/NexusAgentX/rustdesk/issues/3) 和 [显示器管理 #5](https://github.com/NexusAgentX/rustdesk/issues/5)。控制端复用原版协议，被控端无需修改。
+Implements [file management and recovery #3](https://github.com/NexusAgentX/rustdesk/issues/3) and [display management #5](https://github.com/NexusAgentX/rustdesk/issues/5). The controller reuses the stock protocol; the controlled client needs no changes.
 
-## 文件管理与恢复
+## File management and recovery
 
-- `rd_file_manage`：`create_directory`、`rename`、`remove_file`、`remove_directory`，`location` 为 `local/remote`。要求绝对路径，拒绝根目录和 `.`/`..` 路径段；重命名使用同一父目录下的单个 `new_name`。
-- 非空目录删除须显式 `recursive: true`。控制端先枚举包含隐藏文件的目录，再按子项到父目录的顺序删除；不跟随已枚举出的符号链接。递归最多 10000 项、64 层。与原版直接递归删除空目录不同，本接口会检查每一步结果。
-- 管理操作返回可查询任务，记录已完成步骤。取消或中断不会回滚；原版重命名可能按操作系统语义替换已有目标。
-- `rd_file_job_resume`：在同一绑定内，恢复保留的 `interrupted/failed/cancelled` 传输，创建新任务，保留旧记录。要求对端支持原版断点续传（1.4.2 起），连接已就绪且已获得 AI 控制权。
-- 恢复依据原版的大小、修改时间摘要及仍存在的部分文件决定字节偏移，不是内容哈希校验。取消可能已经清理部分文件；没有可复用部分时会重新传输或进入冲突处理。任务结束后保留 300 秒，不跨控制端进程重启恢复，也不会由 GUI 在后台绕过控制权自动续传。
+- `rd_file_manage`: `create_directory`, `rename`, `remove_file`, `remove_directory`, with `location` set to `local/remote`. Requires absolute paths and rejects roots and `.`/`..` components. Rename uses a single `new_name` within the same parent directory.
+- Deleting a nonempty directory requires explicit `recursive: true`. The controller enumerates entries, including hidden files, and deletes children before parents without following enumerated symlinks. Recursion is capped at 10000 entries and 64 levels. Unlike stock recursive empty-directory deletion, this interface checks each step's result.
+- Management operations return queryable jobs recording completed steps. Cancellation/interruption does not roll back changes. Stock rename may replace an existing destination according to OS semantics.
+- `rd_file_job_resume`: resumes a retained `interrupted/failed/cancelled` transfer within the same binding, creating a new job and retaining the old record. Requires stock resume support on the peer (1.4.2 onward), a ready connection and AI control.
+- Resume determines the byte offset using stock size/modification-time summaries and any remaining partial file, not a content hash. Cancellation may already have removed partial files. Without reusable partial data, transfer restarts or enters conflict handling. Completed jobs are retained for 300 seconds, do not survive controller process restart, and are not automatically resumed in the GUI behind the control checks.
 
-## 原生文件剪贴板
+## Native file clipboard
 
-| 工具 | 行为 |
+| Tool | Behavior |
 | --- | --- |
-| `rd_file_clipboard_get/set` | 查询或显式设置 `enabled`，设备偏好；独立于文本同步开关 |
-| `rd_file_clipboard_copy` | 有 `paths`：设置本机系统文件剪贴板并发布文件列表；无 `paths`：向远端当前选择发送 Copy |
-| `rd_file_clipboard_paste` | 无 `local_directory`：向远端焦点发送 Paste；有该参数：下载当前绑定最近收到的文件剪贴板到本机已有目录 |
-| `rd_file_clipboard_cancel` | 取消当前绑定的本机原生粘贴，不取消远端应用的 Paste |
+| `rd_file_clipboard_get/set` | Query or explicitly set `enabled`, a peer preference independent of the text-sync switch |
+| `rd_file_clipboard_copy` | With `paths`: set the local system file clipboard and publish the file list; without `paths`: send Copy to the current remote selection |
+| `rd_file_clipboard_paste` | Without `local_directory`: send Paste to the remote focus; with it: download the current binding's most recent file-clipboard offer into an existing local directory |
+| `rd_file_clipboard_cancel` | Cancel the current binding's local native paste, not the remote application's Paste |
 
-需要桌面会话、文件和键盘权限、文件复制粘贴已启用、非浏览模式。远端文件选择取决于文件管理器焦点；接收原版文件列表要求对应本地桌面标签处于活动状态。与控制条一样，文件剪贴板是**本机全局共享资源**，会影响本地应用及其他启用该功能的连接。
+Requires a desktop session, file and keyboard permissions, enabled file copy/paste and a session outside view-only mode. Remote selection depends on file-manager focus; receiving a stock file list requires the corresponding local desktop tab to be active. As with the toolbar, the file clipboard is a **global resource on the local machine**, affecting local applications and other enabled connections.
 
-`paths` 为 1..128 个已有绝对路径，可为文件或目录。本机直接粘贴目前要求 macOS 和原生文件剪贴板构建支持；其他平台明确返回不支持。远端文件列表有效期 300 秒，且不能跨绑定或重连代次使用。
+`paths` contains 1..128 existing absolute file/directory paths. Direct local paste currently requires macOS with native file-clipboard support enabled at build time; other platforms explicitly return unsupported. Remote file offers expire after 300 seconds and cannot be reused across binding or connection epochs.
 
-本机粘贴状态见 `get.settings.local_paste`，含任务 ID、状态、进度及错误。全局同时只允许一个活动粘贴；等待最多 30000 ms，后台任务上限 10 分钟。同名目标沿用原生实现自动区分名称。取消、失去控制权或连接失效会停止任务；已经完成的文件可能保留。
+Local paste state appears in `get.settings.local_paste`, including job ID, state, progress and error. Only one paste can be active globally. Waits are capped at 30000 ms; the background job limit is 10 minutes. Stock behavior automatically disambiguates duplicate destination names. Cancellation, loss of control or connection invalidation stops the job; completed files may remain.
 
-发送 Copy/Paste 只表示输入发出，不能证明应用完成。默认 Paste 延时 500 ms，最高 30000 ms。用连续 GUI 操作时，应在激活窗口、进入地址栏、选中文件等步骤之间显式等待，并独立检查目的文件。
+Sending Copy/Paste proves only that input was sent, not that the application finished. Default Paste delay is 500 ms, up to 30000 ms. In sequential GUI actions, explicitly wait between activating a window, entering an address bar and selecting files, and independently inspect destination files.
 
-## 显示器与分辨率
+## Displays and resolutions
 
-| 工具 | 行为 |
+| Tool | Behavior |
 | --- | --- |
-| `rd_displays_get` | 显示器 ID、名称、位置、捕获尺寸、缩放、原始分辨率、已知模式、本地窗口和采集选择 |
-| `rd_display_modes_get` | 无副作用地读取已缓存的对端模式；未知时 `known: false` |
-| `rd_display_select` | `display_id` 为数字字符串或 `all`；`target: capture/local_view` |
-| `rd_display_resolution_set` | `mode: set/restore_original/fit_local`；`set` 需要宽高 |
-| `rd_virtual_display_set` | `action: add/remove/remove_all`，调用原版虚拟屏操作 |
+| `rd_displays_get` | Display IDs, names, positions, capture dimensions, scale, original resolutions, known modes, local windows and capture selection |
+| `rd_display_modes_get` | Read cached peer modes without side effects; unknown modes return `known: false` |
+| `rd_display_select` | `display_id` is a numeric string or `all`; `target: capture/local_view` |
+| `rd_display_resolution_set` | `mode: set/restore_original/fit_local`; `set` requires width and height |
+| `rd_virtual_display_set` | `action: add/remove/remove_all`; calls the stock virtual-display operation |
 
-采集选择作用于当前 AI 绑定，本地观看选择作用于一个窗口。多个窗口时必须传 `ui_session_id`。实际订阅取 AI 与 GUI 需求的并集；后续 `rd_screen_capture` 仍会加入指定屏幕。手动选择本地观看不依赖“跟随 AI 操作屏幕”开关。
+Capture selection applies to the current AI binding; local-view selection applies to one window. Multiple windows require `ui_session_id`. Actual subscriptions are the union of AI and GUI requirements; a later `rd_screen_capture` also adds its requested display. Explicit local-view selection does not depend on the follow-AI-action-display switch.
 
-原版在连接和单屏选择时报告支持模式；因此模式未知时先从另一屏切回该屏幕（`local_view`）；原版不会为重复选择当前屏幕重新报告模式。只有一屏时可重连获取连接时的报告。读取模式不会暗中切屏。MCP 的单屏选择不会应用保存的自定义分辨率偏好。切换选择、分辨率或布局后，旧截图坐标引用失效，必须重新截图。
+The stock peer reports supported modes on connection and single-display selection. If modes are unknown, switch away and back through `local_view`; reselecting an already selected display does not make the stock peer report modes again. With only one display, reconnect to obtain the connection-time report. Reading modes never silently switches displays. MCP single-display selection does not apply saved custom-resolution preferences. Changing selection, resolution or layout invalidates old screenshot coordinates; capture again.
 
-物理屏的自定义设置只能选择对端报告的模式；恢复操作可直接使用对端报告的原始尺寸，不依赖支持模式缓存。原始分辨率为 `0x0` 是原版虚拟屏自定义模式标志，不是可恢复的物理尺寸。`fit_local` 使用控制端主显示器尺寸，物理屏要求精确匹配支持列表，不擅自取近似值。捕获像素尺寸与操作系统模式尺寸通过 `scale` 区分。
+Physical-display custom settings can choose only peer-reported modes. Restore may use the peer's original dimensions without a supported-mode cache. An original resolution of `0x0` is the stock virtual-display custom-mode marker, not a restorable physical resolution. `fit_local` uses the controller's primary display dimensions and requires an exact match in a physical display's supported list. It does not silently choose a near match. `scale` distinguishes capture pixels from OS mode dimensions.
 
-分辨率和虚拟屏作用于远端机器，要求 AI 控制权、键盘权限且非浏览模式。`confirmed: true` 表示已观察到匹配状态；等待超时为 `pending`，不能据此认为操作失败并盲目重发。
+Resolution and virtual displays affect the remote machine and require AI control, keyboard permission and a session outside view-only mode. `confirmed: true` means matching state was observed. Timeout returns `pending`, not proof of failure or permission to blindly repeat the operation.
 
-### 虚拟屏与驱动
+### Virtual displays and drivers
 
-对端须为安装版 Windows，报告 `rustdesk_idd` 或 `amyuni_idd`，且隐私模式未开启。RustDesk IDD 添加/移除使用 `index: 1..4`；Amyuni 不传 index，每次添加/移除一块，最多四块；移除全部也不传 index。
+The peer must be an installed Windows client reporting `rustdesk_idd` or `amyuni_idd`, with privacy mode off. RustDesk IDD add/remove uses `index: 1..4`. Amyuni takes no index, adds/removes one display per call and supports at most four. remove_all takes no index either.
 
-原版协议不报告可靠的驱动安装状态，`driver_installed` 始终为未知。**添加虚拟屏可能触发原版安装驱动**，这已获得项目负责人明确确认，替代最初“不隐式安装驱动”的限制。结果通过对端报告的虚拟屏数量或编号观察；未确认时不宣称成功。
+The stock protocol does not reliably report driver installation, so `driver_installed` remains unknown. **Adding a virtual display may trigger stock driver installation**; the project owner explicitly approved this, superseding the initial restriction against implicit driver installation. Results are observed through peer-reported virtual-display counts or IDs; unconfirmed results are not claimed as success.
 
-## 验证记录
+## Validation record
 
-- 自动测试：53 项 automation、11 项 MCP 通过；Flutter 分析零错误/警告（8 项已有 info 提示）。最终 ARM64 安装包解压后及系统安装副本均通过严格签名检查；会话、重连和终端实机回归通过。
+- Automated tests: 53 automation and 11 MCP tests passed. Flutter analysis reported zero errors/warnings (8 existing info notices). The final ARM64 application extracted from the package and the installed copy both passed strict signature checks; live session, reconnect and terminal regression checks passed.
 
-- 原版 Windows RustDesk 1.4.9 双屏：1920×1080 与 2560×1440，第二屏原点为 `(1920, -563)`。
-- 文件管理：本地与远端新建、重命名、非空目录删除拒绝、包含隐藏文件的递归删除通过；本地根符号链接拒绝，子符号链接只删除链接，外部目标保留。
-- 64 MiB 传输在下载 1,179,648 字节时中断，保留部分文件；重连后创建续传任务，完成文件 SHA-256 与源文件一致。
-- 文件剪贴板：中文/空格文件名、目录、空文件、空目录双向传输通过；远端以 SHA-256 检查文件，本机逐字节及目录结构检查通过。禁用开关、无效路径、重新绑定后旧来源拒绝、取消、归还控制权中断通过。
-- 显示器：AI 采集与本地观看独立选择、单屏/全部屏幕、本地 GUI 双屏实际渲染、负坐标截图、选择和分辨率改变后旧坐标拒绝通过；归还控制权后仍可查询、写入被拒绝。
-- 副屏 2560×1440 → 3840×2160 → 原始 2560×1440 实测通过；不支持尺寸及无精确匹配的适配本地请求被拒绝，测试后恢复主屏观看与原分辨率。
-- 回归覆盖布局消息晚于模式消息时的缓存保留，以及平台增量更新不丢失安装状态；支持模式未知时，恢复原始分辨率仍以对端原始尺寸为依据。
-- Windows API 确认两屏有效 DPI 分别为 144 和 96（150%/100%）；RustDesk 捕获 `scale` 均为 1.0，不代表 Windows 桌面缩放。两屏共 10 个点按缩小截图坐标移动鼠标，再由 DPI-aware 的 `GetCursorPos` 独立读回，含负坐标屏，每轴误差不超过 1 像素。
-- **暂缓项**：被控端没有安装版系统服务，未报告虚拟屏支持。项目负责人决定先发布其余功能，暂缓虚拟屏可用环境实测；未安装服务或驱动，未执行虚拟屏添加/移除。该接口的参数和支持判定有自动测试，成功操作路径及虚拟屏自定义分辨率尚待后续环境验证。
+- Stock Windows RustDesk 1.4.9 with two displays: 1920×1080 and 2560×1440, with the second display at `(1920, -563)`.
+- File management: local/remote directory creation, rename, rejection of nonempty deletion without recursion, and recursive deletion including hidden files passed. A local root symlink was rejected; child symlinks were removed without touching external targets.
+- A 64 MiB download was interrupted at 1,179,648 bytes, retaining a partial file. A new resume job after reconnect completed with a SHA-256 matching the source.
+- File clipboard: bidirectional transfers of Chinese/spaced filenames, directories, empty files and empty directories passed. Remote checks used SHA-256; local checks compared bytes and directory structure. Disabling, invalid paths, rejecting old offers after rebinding, cancellation and interruption on release of control passed.
+- Displays: independent AI capture/local-view selection, single/all-display selection, actual dual-display GUI rendering, negative-coordinate screenshots and rejection of old coordinates after selection/resolution changes passed. Queries remained available after control release; writes were rejected.
+- Secondary display 2560×1440 → 3840×2160 → original 2560×1440 passed. Unsupported sizes and fit-local requests without an exact match were rejected. Primary-display viewing and original resolution were restored.
+- Regression checks covered retaining cached modes when layout messages follow mode messages, and preserving installation state across incremental platform updates. Restoring original dimensions remained possible when supported modes were unknown.
+- Windows APIs confirmed effective DPI values of 144 and 96 (150%/100%). RustDesk capture `scale` was 1.0 on both and does not represent Windows desktop scaling. Mouse movement to 10 points across both displays used scaled screenshot coordinates, followed by independent DPI-aware `GetCursorPos` readback. Error was at most 1 pixel per axis, including the display with negative coordinates.
+- **Deferred**: the peer lacked an installed system service and reported no virtual-display support. The project owner chose to release the other features and defer live testing in a supported environment. No service or driver was installed and no virtual display was added/removed. Parameter and support checks have automated coverage; successful operations and custom virtual-display resolutions still need a suitable environment.

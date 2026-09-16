@@ -1,35 +1,35 @@
-# 文字聊天与会话录像
+# Text chat and session recording
 
-MCP 0.1.8 新增 `rd_chat_send`、`rd_chat_read`、`rd_recording_set`、`rd_recording_get`，共 63 个工具。使用原版协议及录制器，被控端不需要修改。
+MCP 0.1.8 adds `rd_chat_send`, `rd_chat_read`, `rd_recording_set` and `rd_recording_get`, bringing the total to 63 tools. It uses the stock protocol and recorder; the controlled client needs no changes.
 
-## 文字聊天
+## Text chat
 
-- `rd_chat_send(session_ref, text, operation_id?)`：向已就绪的桌面连接发送 1..16384 字节 UTF-8 文本，需要 AI 控制权，不依赖键鼠权限。返回 sent；原版没有送达/已读回执。
-- `rd_chat_read(session_ref, cursor?, max_messages?, wait_ms?)`：读取当前可见核心会话的内存消息缓存。包括观察到的远端来信及本地 GUI/MCP 成功发送的消息，不读取旧 GUI 历史、不落盘，也不操作系统剪贴板。
-- 默认每次 50 条，范围 1..100；等待默认 0，上限 30 秒。`next_cursor` 用于增量读取；缓存淘汰用 `gap` 表示，其他会话或越界游标报错。
-- 每个会话保留最多 256 条 / 256 KiB，单条远端消息最多 16 KiB，UTF-8 安全截断并报告 `truncated`。消息保留顺序与连接代次，重连不抹掉当前会话缓存；断线后立即返回已有缓存。关闭会话后随会话回收。
+- `rd_chat_send(session_ref, text, operation_id?)`: sends 1..16384 bytes of UTF-8 text through a ready desktop connection. Requires AI control, independently of keyboard/mouse permission. Returns sent; the stock protocol has no delivery/read receipts.
+- `rd_chat_read(session_ref, cursor?, max_messages?, wait_ms?)`: reads the visible core session's in-memory message cache. It includes observed incoming messages and messages successfully sent by the local GUI/MCP. It neither reads old GUI history nor writes to disk or accesses the system clipboard.
+- Returns 50 messages by default, with a range of 1..100. The default wait is 0, up to 30 seconds. `next_cursor` supports incremental reads; `gap` reports cache eviction. A cursor from another session or outside the valid range is an error.
+- Each session retains at most 256 messages / 256 KiB. Each incoming message is limited to 16 KiB, with UTF-8-safe truncation reported by `truncated`. Messages preserve order and connection epoch. Reconnection retains the current session's cache; disconnected reads immediately return cached messages. The cache is reclaimed with the session after closure.
 
-## 会话录像
+## Session recording
 
-- `rd_recording_set(session_ref, enabled, wait_ms?, operation_id?)`：显式开始/停止原版屏幕录像，需要 AI 控制权。开始要求对端录像权限；停止不要求该权限仍开启。开始请求关键帧。默认等待 10 秒，上限 30 秒；超时不会取消录像。
-- `rd_recording_get(session_ref)`：读取本地录制状态、当前输出目录及最多 64 条文件记录。每个文件包含路径、屏幕、录制代次、原版帧写入事件数（并非媒体帧总数）、最终字节数及 writing/finalized/discarded/failed 状态。
-- confirmed 开始要求实际观察到写入的视频帧；confirmed 停止要求本地录制开关关闭且所有活动写入器已收尾。仍应检查每个文件的状态和错误。
-- 沿用控制端原版视频保存目录，不修改全局目录设置。输出文件保留在控制端，文件记录保存在会话内存里；编码/分辨率改变或时间戳回退（如刷新视频流）可能分成多个文件。
-- 只录视频，不录音频。原版会删除不足一秒或没有有效视频的文件；接口明确标记 discarded，不假装文件可用。
-- 录制保持原版行为：归还 AI 控制权后继续，显式停止、对端撤销录像权限或连接结束时收尾；本地和对端显示原版录制状态。
-- 创建/写入/封装失败会公开错误。旧连接或旧录制文件的晚到结果不会覆盖新录制状态。
+- `rd_recording_set(session_ref, enabled, wait_ms?, operation_id?)`: explicitly starts/stops the stock screen recorder and requires AI control. Starting requires remote recording permission; stopping does not require that permission to remain enabled. Starting requests a keyframe. Wait defaults to 10 seconds, with a maximum of 30 seconds; a timeout does not cancel recording.
+- `rd_recording_get(session_ref)`: reads local recording state, the current output directory and at most 64 file records. Each file includes its path, display, recording epoch, stock frame-write event count (not total media frame count), final byte count and writing/finalized/discarded/failed state.
+- Confirming a start requires observation of an actual video-frame write. Confirming a stop requires the local recording switch to be off and every active writer to be finalized. Still inspect each file's state and error.
+- Uses the controller's stock video directory without changing the global directory setting. Output files remain on the controller; file records remain in session memory. Codec/resolution changes or timestamps moving backward (for example, after a video-stream refresh) may split the output into multiple files.
+- Records video only, without audio. The stock recorder deletes files shorter than one second or containing no valid video; the interface explicitly marks them discarded instead of claiming they are usable.
+- Preserves stock recording behavior: recording continues after AI control is released and is finalized on explicit stop, remote recording-permission revocation or connection termination. Both local and remote sides display the stock recording status.
+- Creation/write/muxing failures expose errors. Late results from an old connection or recording file cannot overwrite a new recording's state.
 
-## 验证
+## Validation
 
-69 项 automation、12 项 MCP 自动测试通过，覆盖聊天顺序、游标、跨连接代次、UTF-8 截断和缓存淘汰，以及录制收尾、文件丢弃、失败保留、旧代次隔离和历史上限。
+69 automation tests and 12 MCP tests passed. Coverage includes chat ordering, cursors, connection-epoch changes, UTF-8 truncation and eviction, as well as recording finalization, discarded files, failure retention, old-epoch isolation and history limits.
 
-原版 Windows 1.4.9 双屏实机已验证：
+Live testing against stock Windows 1.4.9 with two displays verified:
 
-- 中文多条消息发送、顺序、操作去重、增量读取和空等待；在被控端聊天窗口目视确认送达。
-- 双屏录制开始/停止、操作去重、文件输出、短片段丢弃；所有本轮有效输出经 ffprobe 检查并由 ffmpeg 完整解码通过。
-- 人工控制下聊天和录像写操作拒绝，读取仍可使用。
-- 断线后录像关闭且写入器完成收尾；聊天缓存离线可读，重连后保留，录像不自行恢复。
+- Sending multiple Chinese messages, ordering, operation deduplication, incremental reads and empty waits; receipt was visually confirmed in the controlled client's chat window.
+- Starting/stopping recording on two displays, operation deduplication, output files and short-clip discard. All valid outputs from this round were inspected with ffprobe and fully decoded with ffmpeg.
+- Chat and recording writes are rejected under human control; reads remain available.
+- Disconnect turns recording off and finalizes writers. Chat remains readable offline and survives reconnection; recording does not restart automatically.
 
-基础会话、控制权、异步操作去重、画质断连状态及终端开关/读取/缩放回归通过；多窗口读取显式指定 `ui_session_id`。
+Regression checks passed for basic sessions, control, asynchronous operation deduplication, connection-quality state across disconnect, and terminal open/close/read/resize. Multi-window reads explicitly selected `ui_session_id`.
 
-被控端连接管理器的远程操作保护拦截了聊天回传和权限切换；按需求方“遇到阻碍跳过实测”的授权，远端来信实机成功路径、录像权限撤销实测暂缓。未绕过原版保护。录制器上报失败后的状态保留由自动测试覆盖，未对测试机制造磁盘故障。
+The controlled client's connection manager blocked remote interaction with chat replies and permission switches. Under the project owner's instruction to defer blocked live tests, successful incoming remote chat and recording-permission revocation remain untested on a live peer. Stock protections were not bypassed. Automated tests cover retaining state after recorder-reported failures; disk failures were not induced on the test machine.

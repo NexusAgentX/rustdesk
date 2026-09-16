@@ -1,43 +1,43 @@
-# TCP 隧道与终端
+# TCP tunnels and terminals
 
-MCP 0.1.9 增加 `tcp_tunnel` 会话类型，以及 `rd_tunnel_list`、`rd_tunnel_add`、`rd_tunnel_remove`、`rd_tunnel_authenticate`，累计 67 个工具。只修改控制端，被控端继续使用原版 RustDesk。
+MCP 0.1.9 adds the `tcp_tunnel` session type and `rd_tunnel_list`, `rd_tunnel_add`, `rd_tunnel_remove` and `rd_tunnel_authenticate`, bringing the total to 67 tools. Only the controller changes; the controlled client remains stock RustDesk.
 
-## TCP 隧道
+## TCP tunnels
 
-1. `rd_session_open(peer_id, kind="tcp_tunnel")` 打开可见的原版端口转发窗口，准备本地管理器。`ready` 只表示本地管理器就绪，`connection.authenticated=false`；远端认证和连接状态在每条隧道中报告。
-2. `rd_tunnel_add(session_ref, local_port, remote_host, remote_port, password?, operation_id?)` 绑定 `127.0.0.1` 的指定端口。端口范围 1..65535，不使用原版特殊 RDP/自动端口 0。返回确认只证明本地绑定成功。
-3. 本地程序连接该端口时，才使用原版 PORT_FORWARD 协议连接被控端并认证。`remote_host` 从被控端访问，例如 `127.0.0.1` 指被控端自身。隧道传输任意 TCP 字节，不解释 HTTP、命令或其他上层协议。
-4. `rd_tunnel_list` 查询状态、活动连接数、累计成功连接数、认证挑战和最近错误。状态包括 listening、connecting、awaiting_auth、authenticating、closing、closed；任务异常清理失败时为 failed。监听继续存在时，远端目标失败保留 `last_error`；成功次数不能证明当前目标仍可用。
-5. 需要密码/双因素验证时，调用 `rd_tunnel_authenticate` 并传入该隧道当前的 `tunnel_id`、`challenge_id` 及凭据。挑战不能跨隧道使用，凭据不会广播给其他监听器。请求已发送不等于认证成功。原版 TCP 隧道不支持系统账户登录。
-6. `rd_tunnel_remove` 关闭监听器及其全部活动连接，包括正在等待认证的连接，等待本地清理后返回确认。会话关闭先清理 MCP 隧道，再关闭 GUI。
+1. `rd_session_open(peer_id, kind="tcp_tunnel")` opens a visible stock port-forwarding window and prepares a local manager. `ready` means only that the local manager is ready; `connection.authenticated=false`. Each tunnel reports its own remote authentication and connection state.
+2. `rd_tunnel_add(session_ref, local_port, remote_host, remote_port, password?, operation_id?)` binds the specified port on `127.0.0.1`. Ports range from 1..65535; stock special RDP/automatic port 0 is not used. Confirmation proves only successful local binding.
+3. Only when a local application connects does the tunnel use the stock PORT_FORWARD protocol to connect and authenticate to the controlled client. `remote_host` is resolved/accessed from that machine; for example, `127.0.0.1` denotes the controlled machine itself. Tunnels carry arbitrary TCP bytes without interpreting HTTP, commands or other application protocols.
+4. `rd_tunnel_list` queries status, active connection count, cumulative successful connections, authentication challenges and the latest error. States include listening, connecting, awaiting_auth, authenticating, closing and closed; abnormal task/cleanup failure is failed. While a listener remains active, remote-target failures retain `last_error`. Historical successes do not prove the target is currently available.
+5. When a password/2FA challenge is required, call `rd_tunnel_authenticate` with that tunnel's current `tunnel_id`, `challenge_id` and credentials. Challenges cannot cross tunnels and credentials are not broadcast to other listeners. Sending a request is not successful authentication. Stock TCP sessions do not support OS-account login.
+6. `rd_tunnel_remove` closes the listener and all active forwarding connections, including those awaiting authentication, then confirms after local cleanup. Session closure cleans MCP tunnels before closing the GUI.
 
-### 生命周期和边界
+### Lifecycle and boundaries
 
-- 需要 AI 控制权才能增加、删除或认证；人工控制仍可查询。归还控制权、解绑、客户端失效、断开/关闭会话均关闭 MCP 监听和活动连接；重连不自动恢复。
-- 最多每会话 16 个 MCP 监听器，每监听器 32 条活动转发。最近 64 条记录保存在内存中，包含已关闭记录。
-- 每条监听使用独立登录状态。可在添加时提供密码，或在打开会话时用 `from_session_ref` 尝试从同一设备已认证的连接继承仍可用的原版连接令牌。通过 MCP 一次性密码认证的桌面会话会在登录后清除该凭据，通常没有令牌可供继承；此时监听器仍可建立，但必须通过 `rd_tunnel_add.password` 或后续认证挑战提供密码，不能假定免密连通。TCP 会话不接受 `session_open.password`，避免把多个监听器的凭据隐式混用。
-- 直接提供的登录状态只保留在监听器内存中用于后续连接，关闭后释放；从已认证连接继承的连接令牌保留在当前 GUI 会话内存中，直到会话关闭。MCP 不把凭据写入磁盘，也不修改已保存的 GUI 转发配置。操作去重记录不保存原始参数。
-- `PORT_IN_USE` 明确报告本地端口冲突。只监听回环地址；非直接 IP 连接要求原版加密通道，不能通过 MCP 放行不安全连接。
-- 原有 GUI 保存的转发配置另列为 `configured_gui_forwards`，不把配置当成运行状态。本批 MCP 的状态、删除和生命周期承诺针对 MCP 创建的隧道。原有 GUI 操作继续使用原版行为。
-- 可见窗口显示 MCP 隧道端口、目标、状态和错误，保留人工接管入口。
+- AI control is required to add, remove or authenticate; queries remain available under human control. Releasing control, detaching, client expiry, disconnect or session closure closes MCP listeners and active connections. Reconnection does not restart them.
+- At most 16 MCP listeners per session and 32 active connections per listener. The latest 64 records, including closed entries, remain in memory.
+- Each listener has isolated login state. A password may be provided when adding it, or `from_session_ref` during session open may try to inherit a still-valid stock connection token from an authenticated connection to the same peer. A desktop authenticated with a one-use MCP password clears that credential after login and usually has no reusable token. A listener can still be established, but a password must then be supplied through `rd_tunnel_add.password` or a later challenge; passwordless connectivity must not be assumed. TCP sessions reject `session_open.password` to avoid implicitly sharing credentials among listeners.
+- Explicit login state remains only in listener memory for subsequent connections and is released on close. An inherited connection token remains in the current GUI session's memory until that session closes. MCP does not persist credentials to disk or modify saved GUI forwarding configuration. Deduplication records do not store original arguments.
+- `PORT_IN_USE` explicitly reports local port conflicts. Only loopback listeners are supported. Connections not made directly by IP require the stock encrypted channel; MCP cannot authorize an insecure connection.
+- Saved GUI forwarding configuration is listed separately as `configured_gui_forwards`; configuration is not treated as runtime state. MCP status, deletion and lifecycle guarantees in this increment apply to MCP-created tunnels. Existing GUI actions retain stock behavior.
+- The visible window shows MCP tunnel ports, targets, states and errors, and retains the human-takeover control.
 
-## 终端复用
+## Terminal reuse
 
-继续使用已有 `rd_terminal_list/create/read/write/resize/close`，不新增另一套执行接口。
+Continues using `rd_terminal_list/create/read/write/resize/close` without adding another execution interface.
 
-- 终端是交互式字节流，保留 ANSI、UTF-8 及原始字节，支持文本/base64 双表示。
-- 游标绑定终端实例、连接代次和字节偏移。重复读取不消耗缓存；缓存覆盖明确返回 `OUTPUT_GAP`。
-- `requested_size` 表示已请求的尺寸，终端进程退出码只对应整个 shell，不伪造每条输入的独立退出码或 stdout/stderr。
-- 原版平台、版本、终端功能和认证要求仍由原协议判断；明确不支持时创建返回 `UNSUPPORTED`，未完成协商或认证时返回 `NOT_READY`，避免先创建无效标签。断线后不可继续写入旧终端。
+- Terminals are interactive byte streams, preserving ANSI, UTF-8 and raw bytes with text/base64 representations.
+- Cursors bind to terminal instance, connection epoch and byte offset. Repeated reads do not consume the cache; overwritten output returns `OUTPUT_GAP`.
+- `requested_size` reports the requested dimensions. Process exit codes belong to the whole shell, not invented per-input exit codes or separate stdout/stderr streams.
+- Stock platform, version, terminal support and authentication requirements remain authoritative. Explicitly unsupported creation returns `UNSUPPORTED`; incomplete negotiation/authentication returns `NOT_READY`, avoiding invalid tabs. Disconnected terminals cannot accept further writes.
 
-## 验证
+## Validation
 
-74 项 automation、12 项 MCP 自动测试通过。新增覆盖端口独占、取消请求不绑定端口、挑战隔离、交接释放端口、关闭后拒绝新请求，以及保留一个长期监听并连续创建/关闭 70 个短期监听的历史淘汰边界；终端支持协商、明确不支持及断线前置拒绝有自动测试。
+74 automation tests and 12 MCP tests passed. New coverage includes port exclusivity, cancellation before binding, isolated challenges, port release on handoff, rejection after closure, and history eviction while preserving a long-lived listener across 70 short-lived listener create/close cycles. Terminal support negotiation, explicit lack of support and preflight rejection after disconnect have automated coverage.
 
-原版 Windows 1.4.9 实机已通过二进制回显（含空字节与非 UTF-8 字节）、添加/删除去重、端口冲突、错误密码挑战与更正、无效挑战拒绝、远端目标连接失败报告，以及删除/交接控制权/断线/关窗口后的监听与活动连接清理。重连后原监听保持关闭。已验证来源桌面的一次性凭据已清除时，返回隧道密码挑战，显式认证后同一本地连接继续完成回显。
+Live testing against stock Windows 1.4.9 verified binary echo (including null and non-UTF-8 bytes), add/remove deduplication, port conflicts, incorrect-password challenges and correction, invalid-challenge rejection, remote-target failure reporting, and cleanup of listeners/active connections on removal, control handoff, disconnect and window closure. Listeners remained closed after reconnect. When the source desktop's one-use credential had been cleared, the tunnel returned a password challenge; explicit authentication then completed echo on the same local connection.
 
-终端实测通过中文/ANSI 原始字节、双表示、重复读取游标、输入去重、创建第二个终端、尺寸调整、真实 shell 退出码 7、断线后写入拒绝及关闭后缓存读取。临时回显服务运行在原版终端中、只监听被控端回环地址；按进程身份核对后关闭，并实际确认端口已关闭。
+Terminal live testing passed for Chinese/ANSI raw bytes, dual representations, repeated cursor reads, input deduplication, creating a second terminal, resizing, actual shell exit code 7, write rejection after disconnect and cached reads after closure. The temporary echo service ran in the stock terminal and listened only on the controlled machine's loopback interface. It was shut down after verifying process identity, and port closure was confirmed.
 
-最终安装包还通过基础会话、控制权、操作去重、截图及画质设置断线/重连回归，解压后的应用签名校验通过。
+The final package also passed basic session, control, deduplication, screenshot and quality-setting disconnect/reconnect regression checks. Signature verification passed for the extracted application.
 
-双因素认证成功路径、旧版本被控端的真实拒绝响应及远端隧道权限撤销缺少测试环境，按需求方授权暂缓；未修改被控端 RustDesk、安装服务或绕过权限保护。
+Successful 2FA, actual rejection by older peers and remote tunnel-permission revocation lack suitable test environments and were deferred with the project owner's authorization. The controlled RustDesk client was not modified, no service was installed and permission protections were not bypassed.

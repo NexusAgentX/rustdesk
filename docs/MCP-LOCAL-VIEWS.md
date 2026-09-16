@@ -1,48 +1,48 @@
-# 本地视图、缩放与窗口控制
+# Local views, scaling and window control
 
-MCP 控制端复用桌面 Flutter 视图，被控端仍使用原版 RustDesk。以下设置不修改远端分辨率，也不改变 MCP 截图输出尺寸。
+The MCP controller reuses desktop Flutter views, while the controlled client remains stock RustDesk. These settings change neither remote resolution nor MCP screenshot output dimensions.
 
-## 工具
+## Tools
 
-| 工具 | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `rd_view_settings_get` | 从指定 Flutter 视图读取设置、当前缩放、光标选项、全屏、控制条固定状态及本地显示器列表 |
-| `rd_view_settings_set` | `change` 指定一项设置和明确值，避免 toggle 重试反转状态 |
-| `rd_view_window` | 展示窗口、关闭一个视图、通过原版多屏路径打开指定显示器 |
+| `rd_view_settings_get` | Read settings, current scaling, cursor options, fullscreen, toolbar pinning and local displays from the specified Flutter view |
+| `rd_view_settings_set` | Specify one setting and explicit value through `change`, avoiding state reversal when retrying a toggle |
+| `rd_view_window` | Show a window, close one view or open a selected display through the stock multi-display path |
 
-共有多个视图时，必须提供 `ui_session_id`，从 `rd_displays_get.local_views` 获取。读操作无需 AI 控制权；写操作需要已就绪桌面及 AI 控制权，Flutter 执行前重新校验。写入支持既有 `operation_id` 去重。
+When multiple views exist, provide `ui_session_id` from `rd_displays_get.local_views`. Reads do not require AI control. Writes require a ready desktop and AI control, checked again before Flutter executes them. Writes support existing `operation_id` deduplication.
 
-## 设置与作用范围
+## Settings and scope
 
-- `scale`：`mode: original/adaptive/custom`。custom 要求 `percent: 5..1000`，其他模式不传 percent。保存设备偏好并立即更新目标视图的画布；实际渲染比例另见 `scale.render_scale`。
-- `individual_windows`：`enabled` 保存设备偏好，决定以后通过控制条选择显示器时是否打开独立窗口，不立即创建或关闭已有窗口。
-- `use_all_local_displays`：`enabled` 保存设备偏好，在下一次新连接时按原版逻辑应用。启用需要本机至少两块显示器及对端多屏支持；关闭不撤销现有窗口布局。
-- `show_remote_cursor`、`follow_remote_cursor`、`follow_remote_focus`、`scale_cursor`：保存设备偏好。支持条件取决于对端平台、版本、光标是否已嵌入画面、当前单屏/全屏显示范围及是否存在多个视图；查询结果将设置值与有效状态分开。
-- 启用 `follow_remote_cursor` 同时开启远端光标显示；先关闭跟随后，才能关闭光标显示。禁用跟随保留显示光标的设置。
-- `follow_ai_display`：全局持久设置，复用首版跟随 AI 操作屏幕功能。鼠标移动本身不触发跟屏，点击等坐标操作沿用既有规则。
-- `toolbar_pinned`：保存全局控制条固定偏好并立即更新目标视图。其他已打开视图保持各自已加载的状态。
-- `fullscreen`：控制整个本地系统窗口，影响共享该窗口的其他标签；不是远端桌面的分辨率设置。
+- `scale`: `mode: original/adaptive/custom`. custom requires `percent: 5..1000`; other modes do not accept percent. Saves the peer preference and immediately updates the target view's canvas. Actual rendering scale is reported separately in `scale.render_scale`.
+- `individual_windows`: `enabled` saves a peer preference governing whether future toolbar display selections open separate windows. Does not immediately create or close existing windows.
+- `use_all_local_displays`: `enabled` saves a peer preference applied through stock behavior on the next new connection. Enabling requires at least two local displays and peer multi-display support. Disabling does not undo an existing window layout.
+- `show_remote_cursor`, `follow_remote_cursor`, `follow_remote_focus`, `scale_cursor`: saved peer preferences. Support depends on peer platform/version, whether the cursor is embedded in video, the current single/all-display scope and whether multiple views exist. Queries distinguish configured values from effective state.
+- Enabling `follow_remote_cursor` also enables remote cursor display. Turn following off before hiding the cursor. Disabling following preserves the cursor-display setting.
+- `follow_ai_display`: persistent global setting reusing the initial AI-action display-following feature. Mouse movement alone does not trigger following; clicks and other coordinate actions follow the existing rules.
+- `toolbar_pinned`: saves the global toolbar-pinning preference and immediately updates the target view. Other open views retain their own loaded state.
+- `fullscreen`: controls the entire local OS window, including other tabs sharing it; it does not set remote desktop resolution.
 
-除 `scale` 外，各设置均使用 `enabled: true/false`。
+All settings except `scale` use `enabled: true/false`.
 
-## 窗口操作
+## Window actions
 
-`action` 是对象：`{"action":"show"}`、`{"action":"close"}` 或 `{"action":"open_display","display_id":"1"}`。
+`action` is an object: `{"action":"show"}`, `{"action":"close"}` or `{"action":"open_display","display_id":"1"}`.
 
-- show 展示并提升目标系统窗口。
-- close 只关闭目标桌面视图；最后一个视图关闭时原版会断开逻辑会话。`rd_session_close` 则关闭该会话的全部视图。
-- open_display 复用原版显示器窗口路径，可能激活已有窗口或创建新窗口。显示器编号从 0 开始，需在线且支持原版多视图协议。
-- open/close 返回 `delivery: sent, confirmed: false`；不能据此宣称窗口已打开/关闭。用 `rd_displays_get` 观察实际视图数量和显示器，必要时读取 `rd_session_get`。
-- 等待超时返回 pending。不要盲目重发窗口操作；使用操作去重及状态查询。
+- show displays and raises the target OS window.
+- close closes only the target desktop view. Closing the last view disconnects the logical session through stock behavior. `rd_session_close` closes all views of that session.
+- open_display reuses the stock display-window path and may activate an existing window or create a new one. Display IDs start at 0; the connection must be online and support the stock multi-view protocol.
+- open/close return `delivery: sent, confirmed: false`; this does not confirm that the window opened/closed. Observe actual view counts and displays through `rd_displays_get`, and read `rd_session_get` if needed.
+- Wait timeout returns pending. Do not blindly resend window actions; use operation deduplication and state queries.
 
-## 验证记录
+## Validation record
 
-- 原版 Windows RustDesk 1.4.9 双屏：原始/适应/125% 自定义缩放读回通过，远端分辨率未改变；135% 自定义缩放重连后保留，结束后恢复原设置。
-- 光标显示与跟随、跟随焦点、缩放光标、AI 跟屏、独立窗口偏好、控制条固定及系统全屏开关读回通过；跟随光标时隐藏光标的冲突被拒绝。
-- AI 跟屏关闭时点击副屏不切换本地观看；开启后同样点击切至副屏。
-- 原版路径实际创建第二显示器窗口并渲染画面；同一 operation_id 重试未重复创建。多视图未指定目标时报歧义；此时跟随光标被拒绝；关闭新增视图后原会话仍连接。
-- 无效缩放参数、不存在的视图、归还控制权后写操作被拒绝；归还后仍可查询。
-- 本机只有一块显示器，启用 use_all_local_displays 明确拒绝。需求方决定先发布其余功能，双本地显示器成功路径实测暂缓，继续在 #6 跟踪。
-- 新增 Flutter 视图控制文件分析无问题；其他相关文件仅有原有提示。
+- Stock Windows RustDesk 1.4.9 with two displays: original/adaptive/125% custom scaling readbacks passed without changing remote resolution. 135% custom scaling survived reconnect; original settings were restored afterward.
+- Cursor display/following, focus following, cursor scaling, AI display following, separate-window preference, toolbar pinning and system fullscreen switches read back correctly. Hiding the cursor while following it was rejected as a conflict.
+- With AI display following off, clicking the secondary display did not change local viewing. With it enabled, the same click switched to that display.
+- The stock path created a second-display window and rendered its image. Retrying the same operation_id did not create another window. Multiple views without an explicit target produced an ambiguity error; cursor following was rejected in this state. Closing the new view kept the original session connected.
+- Invalid scaling, nonexistent views and writes after releasing control were rejected; queries remained available after release.
+- Only one local display was available, so enabling use_all_local_displays was explicitly rejected. The project owner chose to release the other features and defer the successful two-local-display path, tracked in #6.
+- The new Flutter view-control file had no analysis issues; related existing files had only pre-existing notices.
 
-- 自动测试：54 项 automation 与 11 项 MCP 全部通过；会话、重连、终端实机回归通过，安装版及 ZIP 解压产物的严格签名校验通过。
+- Automated tests: all 54 automation and 11 MCP tests passed. Live session, reconnect and terminal regression checks passed, as did strict signature verification for the installed application and the application extracted from the ZIP.

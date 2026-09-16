@@ -1,56 +1,56 @@
-# MCP 能力与操作查询
+# MCP capability and operation inspection
 
-对应 [实施任务 #1](https://github.com/NexusAgentX/rustdesk/issues/1)。仅改变控制端，原版被控端无需更新。
+Implements [implementation task #1](https://github.com/NexusAgentX/rustdesk/issues/1). Only the controller changes; the stock controlled client does not need an update.
 
-## 能力查询
+## Capability inspection
 
-`rd_capabilities_get({"session_ref":"r_…"})` 是只读操作，人工控制期间也可调用。
-返回 `peer`（版本、平台、认证、连接状态、已知权限）、`capabilities` 和 `contract`。
+`rd_capabilities_get({"session_ref":"r_…"})` is read-only and is also available during human control.
+It returns `peer` (version, platform, authentication, connection state and known permissions), `capabilities` and `contract`.
 
-每项能力包含：
+Each capability includes:
 
-- `implemented`：当前 MCP 已实现；此列表不把仅在 GUI 中存在的功能当作 MCP 能力。
-- `supported`：会话类型及已协商功能是否支持；`null` 表示尚未确定。
-- `allowed`：权限；`null` 不代表授权。需要远端权限的操作在执行时仍重新验证。
-- `available`、`blockers`：当前条件判断和原因，如 `support_unknown`、`unsupported_for_session`、`permission_unknown`、`permission_denied`、`human_control`、`control_transition`、`not_ready`、`session_closed`。
-- `tools`、`scope`、`requires_ai_control`：关联工具、作用范围、是否需要 AI 控制权。
+- `implemented`: implemented by the current MCP service; features available only through the GUI are not counted as MCP capabilities.
+- `supported`: whether the session type and negotiated features support it; `null` means undetermined.
+- `allowed`: permission status; `null` does not mean authorized. Operations requiring remote permissions check them again at execution time.
+- `available`, `blockers`: current availability and reasons, such as `support_unknown`, `unsupported_for_session`, `permission_unknown`, `permission_denied`, `human_control`, `control_transition`, `not_ready` and `session_closed`.
+- `tools`, `scope`, `requires_ai_control`: associated tools, scope and whether AI control is required.
 
-这些是查询瞬间的状态，不是原子授权凭据，也不保证已有可用帧、终端实例或应用结果。每项能力在后续实现时应补充其版本、平台、权限、驱动和协商条件，不应仅凭版本猜测权限。
+These values describe the instant of the query. They are not atomic authorization credentials and do not guarantee an available frame, terminal instance or application result. As capabilities are implemented, document their version, platform, permission, driver and negotiation requirements; do not infer permissions from a version alone.
 
-## 操作查询
+## Operation inspection
 
-写调用主动传 `operation_id` 可使用既有去重机制；同一 MCP 客户端内相同 ID 与参数只执行一次，不同参数返回 `OPERATION_CONFLICT`。
+Write calls can supply `operation_id` to use the existing deduplication mechanism. Within the same MCP client, the same ID and parameters execute only once; different parameters return `OPERATION_CONFLICT`.
 
-`rd_operation_get({"operation_id":"example","wait_ms":1000})` 只查询，不重发写操作；无需额外会话引用。只能查询当前逻辑 MCP 客户端创建的记录，绑定失效时仍受原有读权限校验约束。`rd_session_get` 原有的操作查询也保留。
+`rd_operation_get({"operation_id":"example","wait_ms":1000})` only queries; it does not resend the write and needs no additional session reference. It can query only records created by the current logical MCP client. Existing read-authorization checks still apply when a binding becomes invalid. Operation inspection through `rd_session_get` remains available.
 
-- `wait_ms` 为 0..30000，默认 0，仅等待本地工具执行结束。
-- 返回 `data.operation` 为原始调用结果，内含 `operation` 元数据；外层 `completed` 只表示查询完成。
-- 元数据 `tool` 标识原始工具；不返回原始参数或认证凭据。
+- `wait_ms` ranges from 0..30000, defaults to 0, and waits only for local tool execution to finish.
+- `data.operation` contains the original call result, including its `operation` metadata; the outer `completed` means only that the query completed.
+- Metadata `tool` identifies the original tool. Original arguments and authentication credentials are not returned.
 
-| execution_state | outcome | 含义 |
+| execution_state | outcome | Meaning |
 | --- | --- | --- |
-| running | pending | 本地工具仍在执行 |
-| finished | reported | 本地调用已完成，结果的证据强度以原始工具契约为准 |
-| finished | unknown | 原始调用以 pending 结束，尚无最终远端结果 |
-| finished | partial | 原始工具报告部分执行 |
-| cancelled | unknown | 调用被取消，已经发送的操作不能撤回 |
-| failed | unknown | 工具报告错误；不能据此保证远端未发生任何变化 |
+| running | pending | The local tool is still executing |
+| finished | reported | The local call finished; the strength of the evidence follows the original tool's contract |
+| finished | unknown | The original call ended with pending; no final remote result is available |
+| finished | partial | The original tool reported partial execution |
+| cancelled | unknown | The call was cancelled; operations already sent cannot be withdrawn |
+| failed | unknown | The tool reported an error; this does not guarantee that nothing changed remotely |
 
-例如断开请求的有界等待超时后，操作记录保留原始 pending 结果；使用 `rd_session_get` 观察实际连接状态。查询不会将旧的 pending 记录改写为远端成功，也不会重新断开。终端同理由终端状态查询观察。后续文件任务应查询文件任务自身的进度和完成事件。
+For example, after a disconnect request's bounded wait times out, the operation record retains its original pending result. Use `rd_session_get` to observe the actual connection state. Querying neither rewrites an old pending record as remote success nor disconnects again. Likewise, inspect terminal state through terminal queries. Future file tasks should expose their own progress and completion events.
 
-完成记录保留 300 秒，每个客户端最多 256 条；图片/附带输出另有 30 秒缓存。客户端结束后记录清理。不存在、超期或其他客户端的 ID 返回 `OPERATION_EXPIRED`。
+Completed records are retained for 300 seconds, with at most 256 per client. Images and attached output have a separate 30-second cache. Records are cleared when the client ends. Missing, expired or another client's IDs return `OPERATION_EXPIRED`.
 
-## 后续设置接口约定
+## Contract for subsequent settings interfaces
 
-设置应读取实际值并接受明确值（例如 `enabled: true`），不能要求调用方猜测当前状态后 toggle。每个设置说明作用范围：`session`、`peer_preference`、`global` 或 `local_window`，以及是否立即生效、是否持久化。此批次只制定契约，具体设置接口随对应功能实现。
+Settings should expose actual values and accept explicit values (for example, `enabled: true`), rather than require callers to guess the current state before toggling. Each setting documents its scope (`session`, `peer_preference`, `global` or `local_window`), whether it takes effect immediately, and whether it persists. This increment defines the contract; individual settings interfaces accompany their respective features.
 
-写入继续检查绑定、连接代次和 AI 控制权；重连后刷新引用，控制权撤销后不得继续发送队列中的写入。错误沿用 `code/message/retry/details`，不在错误或操作记录中加入密码、验证码或原始认证参数。
+Writes continue to check the binding, connection epoch and AI control. References must be refreshed after reconnection; queued writes must not continue after control is revoked. Errors retain `code/message/retry/details`. Passwords, verification codes and original authentication arguments are excluded from errors and operation records.
 
-## 0.1.1 验证记录（2026-09-16）
+## 0.1.1 validation record (2026-09-16)
 
-- macOS ARM64 release 构建、Flutter 打包及安装后的签名校验通过。
-- 11 项 MCP 测试、40 项 automation 测试通过；包含超时/过期、跨客户端隔离、重复请求与冲突、未知/拒绝权限及人工控制状态。
-- 原版 Windows RustDesk 1.4.9 双显示器实测：能力与版本查询、截图、错误会话类型拒绝、人工接管后的输入拒绝、运行中操作查询、重复调用去重、冲突拒绝、另一客户端不可查询操作、控制权撤销中断等待、断开后的未知结果、重连认证和首帧恢复。
-- 终端连接实测：能力查询、列表、读取、调整大小、关闭终端及关闭会话。
-- 测试按实际状态等待认证后的首帧和重新绑定后的截图缓存，不将认证完成当作画面已就绪。
-- Python MCP SDK 对服务接受 DELETE 后返回的 HTTP 202 打印终止提示；服务清理与后续重新绑定正常，HTTP 会话隔离测试通过。
+- macOS ARM64 release build, Flutter packaging and post-installation signature verification passed.
+- 11 MCP tests and 40 automation tests passed, including timeout/expiry, client isolation, duplicate requests and conflicts, unknown/denied permissions, and human-control state.
+- Live testing against stock Windows RustDesk 1.4.9 with two displays covered capability/version queries, screenshots, rejection of the wrong session type, input rejection after human takeover, running-operation queries, deduplication, conflict rejection, cross-client operation isolation, interruption of waits on control revocation, unknown outcomes after disconnect, reconnect authentication and first-frame recovery.
+- Live terminal testing covered capability inspection, listing, reading, resizing, terminal closure and session closure.
+- Tests waited for actual first-frame arrival after authentication and screenshot-cache readiness after rebinding; authentication completion was not treated as image readiness.
+- The Python MCP SDK printed a termination notice for HTTP 202 after the service accepted DELETE. Service cleanup and subsequent rebinding worked, and HTTP session-isolation tests passed.

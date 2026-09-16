@@ -1,473 +1,473 @@
-# RustDesk MCP 主控客户端需求
+# RustDesk MCP controller requirements
 
-更新时间：2026-09-15。状态：**首版实现完成，单屏实机闭环通过，双屏实机待验收**。当前实现进度见 [构建与开发记录](MACOS-ARM64-BUILD.md)。
+Updated: 2026-09-15. Status: **initial implementation complete; the live single-display workflow passed; live dual-display acceptance pending**. See the [build and development record](MACOS-ARM64-BUILD.md) for implementation progress.
 
-本文记录需求方确认的首版产品需求，作为开发和验收依据。官方底座、主控平台、首版范围、传输选型、人机协作规则及 MCP 接口与服务设计均已定稿。具体接口契约见 [MCP 接口与服务设计](MCP-API-DESIGN.md)。定稿不代表功能已经实现或构建已经通过。
+This document records the project owner's approved initial product requirements as the development and acceptance baseline. Upstream baseline, controller platform, initial scope, transport, human/AI collaboration rules and MCP interface/service design are finalized. See [MCP interface and service design](MCP-API-DESIGN.md) for exact contracts. Finalized design does not itself mean implementation or builds are complete.
 
-## 1. 项目目标
+## 1. Project goal
 
-基于官方 RustDesk 客户端源码，开发一个**保留完整 GUI、内嵌 MCP 服务的主控客户端**。
+Build a **controller client retaining the full GUI and embedding an MCP service**, based on official RustDesk client source.
 
-- AI 通过 MCP 使用远程桌面、键鼠、终端等能力。
-- 人类通过正常 RustDesk 窗口实时观看，并随时接管同一个远程会话。
-- AI 和人类共享会话、画面和操作结果。
-- 被控端继续使用官方 RustDesk，可配合现有 `rustdesk-launcher` 引导器，无需为 MCP 修改被控端。
+- AI uses remote desktop, keyboard/mouse, terminal and related capabilities through MCP.
+- A person watches in the normal RustDesk window and can take over the same remote session at any time.
+- AI and the person share sessions, images and operation results.
+- The controlled machine keeps official RustDesk and can use the existing `rustdesk-launcher` bootstrapper; MCP requires no changes to the controlled client.
 
-## 2. 技术路线
+## 2. Technical approach
 
-- 采用需求方指定的官方稳定版 **RustDesk 1.4.9**，固定标签和提交，不跟随浮动的 `master`，不再以开发启动时的最新版本替换。
-- 保留官方 Flutter / Dart GUI 和 Rust 远控核心。
-- 在 Rust 核心中新增桥接层，复用已有会话和操作接口。
-- 使用 **MCP 官方 Rust SDK `rmcp`，固定版本 `=3.3.0`**。传输选型见第 4 节，MCP 层详细设计见 [MCP 接口与服务设计](MCP-API-DESIGN.md)。
-- MCP 服务内嵌客户端，无需另外启动服务程序。
-- YaoxinCS/RustdeskMCP 仅作为参考，不作为代码底座。
-- 新项目不承担旧版桥接协议兼容和迁移。
-- **MCP 工具命名、参数、返回格式及面向 AI 的交互设计已由需求方确认。** 本文约定底层能力和产品行为，配套设计文档约定具体工具接口。
+- Use the project owner's specified official stable **RustDesk 1.4.9**, pinned by tag and commit rather than following moving `master` or substituting the latest version at development startup.
+- Retain the official Flutter / Dart GUI and Rust remote-control core.
+- Add a bridge inside the Rust core, reusing existing session and operation interfaces.
+- Use the **official MCP Rust SDK `rmcp`, pinned to `=3.3.0`**. See section 4 for transport and [MCP interface and service design](MCP-API-DESIGN.md) for the MCP layer.
+- Embed MCP in the client without a separately started service program.
+- YaoxinCS/RustdeskMCP is a reference only, not the source baseline.
+- This new project does not provide compatibility or migration for older bridge protocols.
+- **MCP tool names, arguments, result formats and AI-facing interaction design have been approved by the project owner.** This document defines underlying capabilities and product behavior; the companion design specifies tool contracts.
 
-### 2.1 固定底座与目标平台
+### 2.1 Pinned baseline and target platform
 
-| 项目 | 决定 |
+| Item | Decision |
 | --- | --- |
-| 官方仓库 | `https://github.com/rustdesk/rustdesk.git` |
-| 稳定版标签 | `1.4.9` |
-| 固定提交 | `6c578292e8ebbbec708b76986ba8c4bc7c509747` |
-| `libs/hbb_common` 子模块 | 使用该标签记录的 `7e1c392c62d39c364127307cd408421dd5f8cfb0`，不独立跟随最新版本 |
-| 二开分支 | `codex/mcp-controller`，从上述固定提交开始 |
-| 首个主控平台 | 本机 macOS，Apple Silicon / ARM64 |
-| Rust 目标架构 | `aarch64-apple-darwin` |
-| 当前验收机器 | macOS `26.6.2`（`25G83`），机型标识 `Mac17,3` |
-| 首版范围 | 完整远程桌面、键鼠与文本、人机接管、交互式终端、多显示器、MCP 设置页 |
+| Official repository | `https://github.com/rustdesk/rustdesk.git` |
+| Stable tag | `1.4.9` |
+| Pinned commit | `6c578292e8ebbbec708b76986ba8c4bc7c509747` |
+| `libs/hbb_common` submodule | Use the tag's `7e1c392c62d39c364127307cd408421dd5f8cfb0`, without independently following latest |
+| Development branch | `codex/mcp-controller`, starting at the pinned commit above |
+| First controller platform | Local macOS, Apple Silicon / ARM64 |
+| Rust target | `aarch64-apple-darwin` |
+| Current acceptance machine | macOS `26.6.2` (`25G83`), model identifier `Mac17,3` |
+| Initial scope | Full remote desktop, keyboard/mouse/text, human/AI takeover, interactive terminals, multiple displays and MCP settings |
 
-当前系统版本用于记录首个验收环境，不代表承诺支持其他 macOS 版本或架构。
+The OS version records the first acceptance environment; it is not a support commitment for other macOS versions or architectures.
 
-### 2.2 总体结构
+### 2.2 Overall structure
 
 ```text
-AI 客户端
+AI client
     ↕ MCP
-RustDesk 主控客户端
-    ├─ MCP 服务层
-    ├─ Rust 桥接层
-    ├─ 官方会话、通信与解码核心
-    └─ Flutter GUI：观看、人工操作、接管
-                ↕ RustDesk 原有协议
-         官方 RustDesk 被控端
+RustDesk controller client
+    ├─ MCP service layer
+    ├─ Rust bridge layer
+    ├─ Official session, communication and decoding core
+    └─ Flutter GUI: viewing, manual operation, takeover
+                ↕ Existing RustDesk protocol
+         Official RustDesk controlled client
 ```
 
-## 3. 人机协作与控制权
+## 3. Human/AI collaboration and control
 
-### 3.1 两个独立状态
+### 3.1 Two independent states
 
-每个会话分别维护：
+Each session separately tracks:
 
-1. **AI 是否已加入**：是否有 AI 绑定该会话。
-2. **当前控制模式**：AI 接管或人类接管。
+1. **Whether AI has joined**: whether an AI is bound to the session.
+2. **Current control mode**: AI control or human control.
 
-绑定会话与取得控制权是两个独立动作。连接状态、AI 加入状态和控制模式分别表达，不能混为一个状态。
+Binding and acquiring control are separate actions. Connection state, AI presence and control mode must be represented independently.
 
-### 3.2 会话初始行为
+### 3.2 Initial session behavior
 
-- **AI 打开的新会话**：默认进入 AI 接管模式，GUI 显示 AI 正在控制。
-- “AI 接管需要人类批准”针对从人类控制转为 AI 控制；AI 新建会话的初始控制模式仍按上一条执行，不额外等待批准。
-- **AI 绑定人类已打开的会话**：保留当前控制模式，同时 GUI 显示 AI 已加入。
-- **AI 主动让出控制权**：仍然保持加入状态，可以继续读取。
+- **A new session opened by AI** starts in AI control; the GUI shows that AI is controlling it.
+- Human approval governs transitions from human to AI control. An AI-created session still starts as described above without an additional approval wait.
+- **AI attaching to an existing human-opened session** preserves its control mode; the GUI shows that AI has joined.
+- **AI voluntarily releasing control** remains attached and can continue reading.
 
-### 3.3 两种控制模式
+### 3.3 Two control modes
 
-| 行为 | AI 接管模式 | 人类接管模式 |
+| Action | AI control | Human control |
 | --- | --- | --- |
-| 人类观看远端画面 | 允许 | 允许 |
-| 人类通过 GUI 操控远端 | 禁止 | 允许 |
-| AI 读取画面、状态、终端输出 | 允许 | 允许 |
-| AI 写入远端 | 允许，仍受远端实际权限限制 | 拒绝，返回明确的控制权错误 |
-| 人类点击接管入口 | 随时可用 | 已由人类控制 |
-| AI 调用接管工具 | 已由 AI 控制 | 按设置直接取得或请求批准 |
-| AI 调用让出工具 | 切换为人类接管 | 保持人类接管 |
+| Human views remote image | Allowed | Allowed |
+| Human operates peer through GUI | Blocked | Allowed |
+| AI reads images, state and terminal output | Allowed | Allowed |
+| AI writes remotely | Allowed, subject to actual peer permissions | Rejected with an explicit control error |
+| Human clicks takeover | Always available | Already under human control |
+| AI calls acquire-control tool | Already under AI control | Acquire directly or request approval according to settings |
+| AI calls release-control tool | Switch to human control | Remain under human control |
 
-AI 接管期间：
+During AI control:
 
-- GUI 中的远端画面为只读。
-- 鼠标移入远端画面时显示只读光标。
-- GUI 不向远端发送人类键鼠和文本输入。
-- 本地缩放、切换显示器、查看连接信息、关闭会话及接管入口仍然可用。
+- The remote image in the GUI is read-only.
+- Moving over it shows a read-only cursor.
+- The GUI sends no human mouse, keyboard or text input to the peer.
+- Local scaling, display switching, connection information, session closure and takeover remain available.
 
-### 3.4 GUI 状态展示
+### 3.4 GUI status
 
-远程会话界面提供清晰的状态提示条和可靠的接管入口。
+The remote-session UI provides a clear status banner and reliable takeover entry.
 
-| 状态 | 界面表现 |
+| State | UI |
 | --- | --- |
-| AI 未加入、人类控制 | 正常人工会话界面 |
-| AI 已加入、人类控制 | 「AI 已加入 · 当前由你控制」 |
-| AI 已加入、AI 控制 | 「AI 正在控制」，提供「人类接管」按钮 |
-| AI 请求接管、等待批准 | 显示接管请求和「允许 / 拒绝」，批准前仍由人类控制 |
+| AI absent, human control | Normal manual-session UI |
+| AI attached, human control | “AI has joined · You are in control” |
+| AI attached, AI control | “AI is controlling”, with a “Take control” button |
+| AI requesting control, awaiting approval | Show the request and “Allow / Deny”; retain human control until approval |
 
-具体文案和样式可在界面设计时调整，但状态必须清楚、实时一致。
+Exact wording and styling may change during UI design, but state must remain clear and synchronized in real time.
 
-### 3.5 控制权切换入口
+### 3.5 Control transitions
 
-#### 人类主动接管
+#### Human takeover
 
-- 人类通过远程会话提示条上的按钮取得控制权，不需要 AI 同意。
-- 停止后续 AI 写入，取消尚未执行的排队写入。
-- 释放 AI 按住的键和鼠标按钮。
-- GUI 恢复人类操作能力。
+- The person takes control through the remote-session banner without AI consent.
+- Stop subsequent AI writes and cancel queued writes not yet executed.
+- Release AI-held keys and mouse buttons.
+- Restore manual GUI operation.
 
-#### AI 请求接管
+#### AI requests control
 
-MCP 提供取得控制权的工具，设置页提供“AI 接管是否需要人类批准”选项，**默认需要批准**：
+MCP provides an acquire-control tool. Settings include whether AI control requires human approval, **enabled by default**:
 
-- **无需批准**：AI 显式调用工具后，可直接从人类接管模式取得控制权。
-- **需要批准**：GUI 显示请求，人类允许后才切换；拒绝或尚未批准时仍由人类控制。
+- **Approval disabled**: an explicit tool call can directly acquire control from human mode.
+- **Approval required**: display a GUI request and switch only after the person allows it. Denial or pending approval retains human control.
 
-AI 必须显式调用接管工具，不因恢复连接、继续读取或重试写入而自动取得控制权。
+AI must explicitly request control; reconnecting, reading or retrying writes does not acquire it automatically.
 
-#### AI 主动让出
+#### AI releases control
 
-MCP 提供让出控制权的工具：
+MCP provides a release-control tool:
 
-- 无需人类批准，直接切换为人类接管。
-- 停止排队中的 AI 写入并释放 AI 按住的输入状态。
-- GUI 同步恢复人类操作并更新提示条。
-- AI 保持加入状态，继续拥有读取能力。
-- 已经处于人类接管模式时，重复让出仍成功。
-- 再次取得控制权仍须显式调用接管工具，并遵守批准设置。
+- Switch directly to human control without approval.
+- Stop queued AI writes and release held AI input state.
+- Restore GUI manual operation and update the banner.
+- Keep the AI attached with read access.
+- Repeated release while already under human control succeeds.
+- Acquiring control again requires an explicit tool call and follows approval settings.
 
-### 3.6 执行约束
+### 3.6 Execution constraints
 
-- 控制权按会话管理，GUI 与桥接层状态一致。
-- Rust 桥接层负责执行限制，不能仅依靠 GUI 禁用或 MCP 参数检查。
-- 排队操作在实际发送前必须检查控制权，避免人类接管后旧请求继续执行。
-- 切换时处理上一方尚未释放的键和鼠标按钮，避免卡键。
-- 会话关闭、断线或 MCP 停止时清理 AI 输入状态。
-- 已经发送到远端的动作无法撤回；例如终端中已经启动的命令，不因接管自动停止。
+- Control is per session, with GUI and bridge state consistent.
+- Rust bridge logic enforces restrictions; disabled GUI controls or MCP argument checks alone are insufficient.
+- Queued operations must recheck control immediately before sending, so old requests cannot continue after human takeover.
+- Transitions handle keys/buttons still held by the previous controller to prevent stuck input.
+- Session closure, disconnect and MCP stop clean up AI input state.
+- Actions already sent cannot be withdrawn. For example, a terminal command already started does not automatically stop on takeover.
 
-“AI 写入”覆盖改变远端状态的操作，包括键鼠、文本、终端输入，以及后续扩展的文件修改、剪贴板写入和系统操作。接管、让出等控制权管理操作有自己的规则。
+“AI writes” includes remote state changes: keyboard/mouse, text, terminal input and later file changes, clipboard writes and system actions. Control-management operations such as acquire/release follow their own rules.
 
-当前方案采用**只读画面 + 明确接管按钮**。“检测到人工键鼠操作就自动接管”不作为首版必要机制。
+The initial design uses a **read-only image plus an explicit takeover button**. Automatically taking over when human input is detected is not required for the first version.
 
-### 3.7 多 AI 连接与会话独占
+### 3.7 Multiple AI clients and session exclusivity
 
-- **允许多个 AI 同时连接 MCP；每个 RustDesk 本地会话同时只允许一个 AI 绑定。** 独占限制作用于远控会话，不作用于整个主控客户端或 MCP 服务。
-- 不同 AI 可以分别绑定不同的 RustDesk 会话；同一个 AI 也可以绑定多个会话。各会话独立维护绑定归属、加入状态和控制权。
-- AI 身份按完成认证和初始化的逻辑 MCP 会话识别，不以 TCP 连接数或工具调用数识别。同一逻辑会话的并发 HTTP 请求不算多个 AI；不同逻辑会话即使使用同一访问令牌，也视为不同 AI。
-- 已被 AI 绑定的 RustDesk 会话拒绝其他 AI 绑定，返回明确的会话占用错误，但不影响其他 AI 连接 MCP 或绑定其他会话。同一 AI 重复绑定自己的会话不创建重复绑定，也不改变控制模式。
-- 绑定的占用检查与归属更新必须作为一个不可分割的操作，保证多个 AI 并发绑定时只有一个成功。会话操作必须检查绑定归属，不能仅凭知道本地会话 ID 就操作其他 AI 绑定的会话。
-- 人类接管或 AI 主动让出控制权不解除 AI 绑定，也不释放该会话的 AI 独占归属。其他 AI 不能通过接管、让出或解绑操作抢占该绑定。
-- AI 主动解绑、其逻辑 MCP 会话结束或失效时，释放对应会话的绑定归属；其他 AI 此后可显式绑定，保留会话当时的人类控制模式，取得控制权仍遵守批准设置。
-- AI 解绑最后一个 RustDesk 会话后仍可保持 MCP 连接，不占用其他会话。持有同一逻辑会话凭据的进程视为同一客户端；首版不尝试识别其内部是否运行多个模型或代理。
+- **Multiple AI clients may connect to MCP simultaneously; each local RustDesk session allows only one AI binding at a time.** Exclusivity applies to remote-control sessions, not the entire controller or MCP service.
+- Different AIs can bind different sessions; one AI can bind multiple sessions. Each independently tracks ownership, presence and control.
+- Identity is the authenticated, initialized logical MCP session, not TCP-connection or tool-call count. Concurrent HTTP requests within a logical session are one AI; different logical sessions using the same access token are different AIs.
+- Other AIs cannot attach to an occupied session and receive an explicit busy error, without being prevented from connecting to MCP or binding other sessions. Reattaching to one's own session creates no duplicate binding and does not change control mode.
+- Occupancy checks and ownership updates must be atomic so only one concurrent attachment succeeds. Session operations check ownership; knowing a local session ID alone does not authorize operations on another AI's binding.
+- Human takeover or voluntary AI release does not detach the AI or relinquish exclusive binding ownership. Other AIs cannot steal it through acquire, release or detach calls.
+- Explicit detachment or logical MCP session termination/expiry releases ownership. Another AI may then explicitly attach, preserving the session's human-control mode; acquiring control still follows approval settings.
+- An AI can remain connected to MCP after detaching its final RustDesk session without occupying other sessions. Processes sharing logical-session credentials are the same client; the first version does not distinguish multiple models/agents inside them.
 
-### 3.8 AI 离开、断线与服务停止
+### 3.8 Departure, disconnect and service stop
 
-| 事件 | 加入状态与控制权 | GUI 会话与待执行操作 |
+| Event | AI presence and control | GUI sessions and pending operations |
 | --- | --- | --- |
-| AI 主动让出控制权 | 保留 AI 已加入，切到人类控制 | 保留会话，取消待执行 AI 写入并释放 AI 输入状态 |
-| AI 解绑某个 RustDesk 会话 | 清除该会话的 AI 已加入，归还人类控制 | 保留会话，取消该会话的接管请求与待执行 AI 写入并释放输入状态 |
-| AI 主动结束 MCP 会话，或被判定失联 | 仅清除该 AI 的所有绑定及加入状态，将这些会话归还人类控制并释放绑定归属 | 保留 GUI 会话，取消该 AI 的接管请求与待执行写入并释放输入状态；其他 AI 及其会话不受影响 |
-| MCP 停止、令牌重置 | 终止所有 AI 的逻辑 MCP 会话，统一清除绑定并归还人类控制 | 保留 GUI 会话；旧逻辑会话及迟到请求不得继续操作，令牌重置另使旧令牌失效 |
-| RustDesk 远端断线，但 AI 的 MCP 会话仍有效 | GUI 中尚存的会话保留 AI 已加入，控制模式改为人类控制 | 连接状态显示断线，取消接管请求和待执行 AI 写入，清理输入跟踪 |
-| RustDesk GUI 会话关闭 | 删除该会话的绑定和控制状态 | 取消其接管请求与待执行 AI 写入，清理输入状态 |
+| AI voluntarily releases control | Retain AI presence; switch to human control | Keep session, cancel pending AI writes and release AI input |
+| AI detaches one RustDesk session | Clear its AI presence; return human control | Keep session, cancel its takeover requests/pending writes and release input |
+| AI ends its MCP session or is declared lost | Clear only that AI's bindings/presence, return their sessions to human control and release ownership | Keep GUI sessions, cancel that AI's takeover requests/pending writes and release input; other AIs are unaffected |
+| MCP stops or token resets | End all logical MCP sessions, clear bindings and return human control | Keep GUI sessions; old sessions/late requests cannot operate; token reset also invalidates the old token |
+| Peer disconnects while AI's MCP session remains valid | Retain AI presence for surviving GUI sessions; switch to human control | Show disconnected, cancel takeover requests/pending writes and clear input tracking |
+| RustDesk GUI session closes | Remove its binding and control state | Cancel its takeover requests/pending writes and clean input |
 
-- 清理时先禁止后续写入，再尽力通过仍可用的远端连接释放按键和按钮；远端已经断开时不声称释放消息已送达，并清除本地跟踪，避免重连后重放。
-- AI 重新连接或重新绑定已有会话后，不恢复旧控制权、旧批准或旧输入队列；必须显式重新取得控制权，并遵守批准设置。
-- 单纯停止再启动 MCP 保留已保存的令牌，但必须建立新的逻辑 MCP 会话；只有显式重置令牌才替换凭据。
-- RustDesk 远端重新连通后也不自动恢复 AI 控制，须显式接管。
-- 收尾操作可重复执行；旧请求的迟到完成或迟到批准不能复活绑定或控制权。
-- 清理按原 AI 身份和原绑定执行；会话已被其他 AI 重新绑定时，旧 AI 的迟到清理不能删除新绑定或改变新控制状态。
+- Cleanup first blocks future writes, then best-effort releases keys/buttons through any surviving remote connection. If already disconnected, do not claim release messages were delivered. Clear local tracking to prevent replay after reconnect.
+- Reconnecting AI or reattaching to an existing session does not restore old control, approval or input queues. Explicitly reacquire control under approval rules.
+- Stopping/restarting MCP retains the saved token but requires new logical MCP sessions. Only explicit token reset replaces credentials.
+- Remote reconnection also does not automatically restore AI control; explicit takeover is required.
+- Cleanup is idempotent; late completion or approval cannot revive bindings/control.
+- Cleanup uses the original AI identity and binding. If another AI has rebound the session, late cleanup by the old AI cannot remove or change the new binding/control.
 
-#### 失联判定
+#### Detecting a lost client
 
-- 使用第 4 节选定的有状态 Streamable HTTP 传输。单个 HTTP 请求结束、TCP 连接关闭或 SSE 临时重连，不直接等同于 AI 离开。
-- 每个逻辑 MCP 会话独立通过标准 MCP `ping` 验证活性：默认每 15 秒探测一次，每次最多等待 15 秒。探测超时则终止该逻辑会话，仅清理该 AI 的绑定和操作；正常运行期间的失联检测目标上限约为 30 秒。
-- 正常应答的 AI 即使长时间没有工具调用，也不因空闲而被解绑。探测及计时独立于工具执行，不能被长时间终端读取或等待批准阻塞。
-- AI 显式结束会话、服务停止或令牌重置立即清理，不等待探测超时。
-- AI 进程崩溃不会保证即时被发现；检测期间人类仍可随时点击接管。主机睡眠后恢复时，对已过期的活性状态先清理，再接受新写入。
+- Use the stateful Streamable HTTP transport selected in section 4. An HTTP request ending, TCP closure or temporary SSE reconnect does not itself mean the AI left.
+- Probe each logical MCP session independently using standard MCP `ping`, by default every 15 seconds with up to 15 seconds for a reply. Timeout ends that session and cleans only that AI's bindings/operations. Under normal operation the target detection bound is approximately 30 seconds.
+- A responding AI is not detached merely for having no tool calls. Probes/timing run independently of tools and cannot be blocked by long terminal reads or approval waits.
+- Explicit departure, service stop and token reset clean up immediately without waiting for probe timeout.
+- AI process crashes are not guaranteed to be detected instantly; human takeover remains available during detection. After host sleep, expired liveness state is cleaned before new writes are accepted.
 
-### 3.9 接管批准请求
+### 3.9 Takeover approval requests
 
-- 每个远端会话最多存在一个待批准的接管请求；请求归属于当前 AI 逻辑会话和当前绑定。
-- **批准有效期为 60 秒**，从请求创建开始计时。超时自动结束请求并撤下提示，保持人类控制，不视为默认批准。
-- 同一个 AI 在请求待批准期间重复请求，复用已有请求及剩余时间；不叠加弹窗、不延长超时。
-- 人类允许后，仅当 AI 仍有效、绑定及对应 GUI 会话仍存在、请求及其控制代次仍有效时切换；否则请求结束并返回明确原因。允许在等待认证或已断线状态取得控制权，以便显式提交认证或发起重连；普通输入仍须等远端可操作且权限通过。断线事件仍撤销当时的控制权及待批准请求，之后必须重新显式申请。
-- 人类拒绝或 AI 主动取消后保持人类控制。取消已结束的请求不改变当前控制权；批准已经生效后要归还控制权，使用让出动作。
-- 超时、拒绝、取消是不同结果。AI 若再次申请，必须显式发起新请求；服务不自动重试或重新弹出批准提示。
-- 人类明确接管、AI 让出、解绑、逻辑 MCP 会话结束、远端断线、GUI 会话关闭、MCP 停止及令牌重置都会取消相关待批准请求。
-- 修改“是否需要批准”设置时取消已有待批准请求，新设置只用于后续显式接管动作，不把原待批准请求自动转为允许。
-- 超时、取消与批准并发时只能有一个最终结果；迟到的点击或响应不能改变已结束请求的结果。
-- 本节规定产品行为；工具参数、请求标识和返回格式按 [MCP 接口与服务设计](MCP-API-DESIGN.md) 执行。
+- Each remote session has at most one pending takeover request, owned by the current logical MCP session and binding.
+- **Approval expires 60 seconds after request creation.** Expiry ends the request and removes its prompt, retaining human control; it never means implicit approval.
+- Repeated requests by the same AI while pending reuse the request and remaining time, without stacking dialogs or extending expiry.
+- Approval switches control only if the AI, binding, GUI session, request and control epoch remain valid; otherwise it ends with an explicit reason. Control may be granted while awaiting authentication or disconnected so AI can explicitly authenticate/reconnect. Ordinary input still requires an operable peer and permission. A disconnect revokes then-current control and pending approval; another explicit request is required afterward.
+- Denial or AI cancellation retains human control. Cancelling a finished request does not change control; use release after an approval has taken effect.
+- Expired, rejected and cancelled are distinct outcomes. Another attempt requires a new explicit request; the service neither retries nor reopens approval prompts automatically.
+- Explicit human takeover, AI release/detach, MCP session termination, remote disconnect, GUI closure, MCP stop and token reset cancel related pending requests.
+- Changing the approval-required setting cancels pending requests. The new value applies only to later explicit acquisition; it does not auto-approve an old request.
+- Racing timeout, cancellation and approval have exactly one final outcome. Late clicks/responses cannot change a finished request.
+- This section defines product behavior; arguments, request IDs and result formats follow [MCP interface and service design](MCP-API-DESIGN.md).
 
-## 4. MCP 设置页
+## 4. MCP settings page
 
-在设置页新增 **MCP Tab**。
+Add an **MCP tab** to settings.
 
-| 项目 | 要求 |
+| Item | Requirement |
 | --- | --- |
-| 服务开关 | 启动、停止内置 MCP 服务 |
-| 运行状态 | 显示关闭、启动中、运行中、失败及错误原因 |
-| 连接地址 | 展示实际监听地址，支持复制 |
-| 访问凭据 | 支持生成、复制、重置令牌 |
-| 连接配置 | 提供可复制的 AI 客户端连接配置 |
-| AI 会话列表 | 展示每个已连接 AI 的身份信息、连接状态及绑定的 RustDesk 会话，详见第 4.3 节 |
-| 接管批准 | 设置 AI 取得控制权是否需要人类批准，默认需要批准 |
-| 监听端口 | 默认 `21122`，允许修改并保存 |
-| 配置保存 | 保存启用状态及相关设置；重启后的行为保持一致 |
+| Service switch | Start/stop the embedded MCP service |
+| Runtime state | Show disabled, starting, running, failed and failure reason |
+| Address | Show the actual listener address with copy support |
+| Credentials | Generate, copy and reset the token |
+| Connection configuration | Provide copyable AI-client configuration |
+| AI session list | Show each connected AI's identity, connection state and bound RustDesk sessions; see 4.3 |
+| Approval | Configure whether AI acquisition requires human approval; required by default |
+| Listening port | Default `21122`, editable and persistent |
+| Persistence | Save enablement and related settings with consistent restart behavior |
 
-### 4.1 传输与 SDK 选型
+### 4.1 Transport and SDK selection
 
-| 项目 | 决定 |
+| Item | Decision |
 | --- | --- |
-| 传输 | 有状态 MCP Streamable HTTP |
-| MCP 协议版本 | 固定 `2025-11-25`，仅协商该版本 |
-| 默认地址 | `http://127.0.0.1:21122/mcp` |
-| 监听范围 | 首版仅绑定 `127.0.0.1` |
-| MCP 官方 Rust SDK | `rmcp = "=3.3.0"`，使用其 Streamable HTTP 服务端及会话管理能力 |
-| HTTP 集成 | Axum `0.8` 系列承载 SDK 服务，依赖精确解析版本在接入时由 `Cargo.lock` 固定 |
-| 访问认证 | 本地生成的随机 Bearer 令牌，通过 `Authorization` 请求头传递 |
-| 服务生命周期 | 内嵌 GUI 客户端进程，复用已有 Tokio 运行时 |
+| Transport | Stateful MCP Streamable HTTP |
+| MCP protocol version | Pin `2025-11-25` and negotiate only that version |
+| Default address | `http://127.0.0.1:21122/mcp` |
+| Listener scope | Initially bind only `127.0.0.1` |
+| Official MCP Rust SDK | `rmcp = "=3.3.0"`, using its Streamable HTTP server and session management |
+| HTTP integration | Axum `0.8` hosts the SDK service; `Cargo.lock` pins exact resolved dependency versions during integration |
+| Authentication | Locally generated random Bearer token in the `Authorization` header |
+| Lifecycle | Embedded in the GUI process, reusing the existing Tokio runtime |
 
-- 选定 SDK 版本要求 Rust 至少 `1.88`；首次构建时验证其与 RustDesk 1.4.9 的集成，不将选型记录当作构建兼容性验证结果。
-- 使用统一 `/mcp` 端点处理请求、事件流和显式会话结束。客户端保持 GET/SSE 通道以接收标准 `ping` 等服务端消息，并及时响应；这属于首版连接要求，须在 MCP 层接入时验证客户端支持。
-- 不提供旧版 HTTP+SSE 双端点兼容层，不引入独立的桥接服务进程。
-- 端口占用时报告启动失败及原因，不自动换端口；用户修改端口后重新启动。界面和复制配置始终反映实际生效地址。
-- 所有 MCP HTTP 方法均执行令牌检查；逻辑会话 ID 不替代认证。令牌使用密码学安全随机源生成，不放在 URL 中，不写入普通日志。
-- 校验 `Origin`；缺失 `Origin` 的已认证原生客户端可连接，出现不被允许的来源时拒绝，不能因只监听本机就绕过检查。
-- 令牌保存在本机受保护的凭据存储中，macOS 使用 Keychain；普通配置仅保存非秘密设置。
-- 重置令牌立即使旧令牌和旧 MCP 会话失效，按第 3.8 节清理。
+- The selected SDK requires Rust at least `1.88`. Validate RustDesk 1.4.9 integration during the first build; selection alone is not evidence of build compatibility.
+- Use one `/mcp` endpoint for requests, event streams and explicit session termination. Clients keep a GET/SSE channel for server messages such as standard `ping` and respond promptly. This initial connection requirement needs client-support validation during MCP integration.
+- No legacy HTTP+SSE dual-endpoint compatibility layer or separate bridge-service process.
+- Port conflicts produce startup failure with a reason; do not silently choose another port. The user changes the port and restarts. UI and copied configuration reflect the effective address.
+- Every MCP HTTP method checks the token; logical-session IDs do not replace authentication. Generate tokens with cryptographically secure randomness; exclude them from URLs and ordinary logs.
+- Validate `Origin`. Authenticated native clients without `Origin` may connect; reject disallowed origins even with a loopback-only listener.
+- Store the token in protected local credential storage, using Keychain on macOS. Ordinary configuration contains only nonsecret settings.
+- Token reset immediately invalidates old tokens and MCP sessions, cleaning up under section 3.8.
 
-以上确定传输、认证及生命周期边界，MCP 工具定义和服务分层按配套设计文档执行。
+These decisions define transport, authentication and lifecycle boundaries. Tool definitions and service layering follow the companion design document.
 
-### 4.2 停止行为
+### 4.2 Stop behavior
 
-关闭 MCP 后：
+After MCP is disabled:
 
-- 停止接受新调用。
-- 停止尚未执行的 AI 写入。
-- 清理 AI 按住的键和鼠标按钮。
-- 正常 GUI 远控会话继续可用，不因 MCP 停止而断开。
+- Stop accepting new calls.
+- Stop AI writes not yet executed.
+- Release AI-held keys and mouse buttons.
+- Keep normal GUI remote-control sessions usable; stopping MCP does not disconnect them.
 
-凭据不得出现在普通日志中；未授权调用不得操作会话。
+Credentials must not appear in ordinary logs. Unauthorized calls cannot operate sessions.
 
-### 4.3 AI 会话列表
+### 4.3 AI session list
 
-MCP 设置页显示具体的 AI 逻辑会话列表，使人类能够看清有哪些 AI 已连接、各自绑定了哪些远控会话，以及当前由谁控制。
+MCP settings show individual logical AI sessions so a person can see connected AIs, their remote-session bindings and who controls each session.
 
-| 信息 | 展示要求 |
+| Information | Display requirement |
 | --- | --- |
-| AI 客户端 | 客户端提供的名称和版本；未提供时显示未知客户端，不推测模型或聊天任务身份 |
-| AI 会话标识 | 为每个逻辑 MCP 会话分配独立的界面展示编号，同名客户端的多个连接也能区分；不直接展示用于协议通信的会话凭据 |
-| 连接状态 | 显示已连接、正在检测活性等实际状态，区别于远端 RustDesk 连接状态 |
-| 时间信息 | 连接建立时间、最近通信时间；通信包括活性探测，不将其标为最近工具调用时间 |
-| 绑定的远控会话 | 按该 AI 列出远端设备 ID、本地 RustDesk 会话 ID 和远端连接状态；没有绑定时显示「尚未绑定远控会话」 |
-| 控制模式 | 每个绑定分别显示 AI 控制或人类控制，不为整个 AI 连接显示单一控制模式 |
-| 接管请求 | 每个绑定显示是否正在等待人类批准，以及待批准请求的剩余有效时间 |
+| AI client | Client-supplied name/version; show unknown client when missing, without inferring model or chat-task identity |
+| AI session identifier | A separate display ID per logical session, distinguishing same-name clients; do not expose protocol-session credentials |
+| Connection state | Actual connected/liveness-checking state, distinct from remote RustDesk connection state |
+| Time | Connection creation and most recent communication; communication includes liveness probes and is not labeled latest tool call |
+| Bound remote sessions | Per AI: remote device ID, local RustDesk session ID and peer connection state; show “No remote sessions attached” when empty |
+| Control mode | AI/human mode per binding, not one mode for the entire AI connection |
+| Takeover request | Pending approval and remaining lifetime per binding |
 
-- 列表以逻辑 MCP 会话为单位；同一个 AI 的多个 HTTP 请求或 SSE 连接不产生重复条目。
-- 连接、绑定、解绑、控制权切换及批准请求变化时及时更新，与远程会话提示条和桥接层状态保持一致。
-- 某个 AI 结束或失联后，按第 3.8 节完成清理并从当前连接列表移除，不影响其他 AI 的条目；首版不要求保留连接历史。
-- MCP 运行但没有 AI 连接时显示空状态；MCP 停止或令牌重置完成清理后，清空旧连接条目。
+- One row per logical MCP session; multiple HTTP requests or SSE connections by that AI do not duplicate rows.
+- Update promptly on connect, attach/detach, control transitions and approval changes, synchronized with session banners and bridge state.
+- When an AI leaves/is lost, perform section 3.8 cleanup and remove its entry without affecting others. Connection history is not required initially.
+- Show an empty state when MCP runs with no clients. Clear old entries after MCP stop/token-reset cleanup.
 
-## 5. 会话与认证
+## 5. Sessions and authentication
 
-桥接层支持：
+The bridge supports:
 
-- 列举当前会话，区分**远端设备 ID**和**本地会话 ID**。
-- 打开可见的远程桌面会话。
-- 绑定已有会话，避免无必要地重复连接。
-- 提交密码，识别其他认证或人工确认需求。
-- 获取连接状态、远端平台、实际权限和显示器信息。
-- 断开、重连。
-- 返回可识别的错误，不能用“已有显示尺寸”代替认证成功。
+- Listing sessions while distinguishing **remote device IDs** and **local session IDs**.
+- Opening visible remote desktop sessions.
+- Attaching existing sessions without unnecessary duplicate connections.
+- Submitting passwords and recognizing other authentication/human-confirmation requirements.
+- Reading connection state, peer platform, actual permissions and display information.
+- Disconnect/reconnect.
+- Returning recognizable errors; existing display dimensions do not establish authentication success.
 
-连接状态至少区分：
+Connection state distinguishes at least:
 
-- 连接中。
-- 等待认证。
-- 等待人工处理。
-- 等待首帧。
-- 可操作。
-- 断线。
-- 关闭。
+- Connecting.
+- Awaiting authentication.
+- Awaiting human action.
+- Awaiting first frame.
+- Ready for operation.
+- Disconnected.
+- Closed.
 
-## 6. 远端画面
+## 6. Remote images
 
-- 导出**远端解码画面**，不截取本机 RustDesk 窗口。
-- 按会话和显示器隔离画面缓存。
-- 返回尺寸、显示器标识、帧序号或时间等必要元数据。
-- 能区分没有画面、旧缓存和新画面。
-- 获取画面不能抢占或破坏 GUI 渲染缓冲。
-- 支持多显示器和显示器变化。
-- 明确截图是否包含光标，并保持一致。
+- Export **decoded remote images**, not screenshots of the local RustDesk window.
+- Isolate caches by session and display.
+- Return dimensions, display ID, frame sequence/time and other required metadata.
+- Distinguish no image, old cache and a new image.
+- Reading must not steal or corrupt GUI render buffers.
+- Support multiple displays and display changes.
+- Explicitly and consistently report cursor inclusion.
 
-首版可优先保证 CPU 可读像素路径。GPU 纹理路径必须提供可用的像素输出路径或回读实现，不能出现 GUI 正常显示、接口却永久无法取图的情况。
+The initial version may prioritize CPU-readable pixels. GPU texture paths must provide usable pixel output or readback, avoiding sessions where the GUI works but the API can never capture.
 
-最小化、切换窗口及重连后的画面行为需要验证。
+Validate images after minimization, window switching and reconnection.
 
-## 7. 键鼠与文本输入
+## 7. Keyboard, mouse and text
 
-桥接层支持：
+The bridge supports:
 
-- 鼠标移动、按下、释放、点击、拖动和滚轮。
-- 键盘按下、释放、组合键。
-- 文本输入。
-- 将图像坐标正确转换为远端桌面坐标。
-- 处理多屏原点、负坐标和图像缩放。
-- 保证同一会话输入顺序。
-- 跟踪 AI 按住的键和鼠标按钮。
-- 同时检查当前控制权与被控端实际授予的权限。
+- Mouse movement, press, release, click, drag and scroll.
+- Keyboard press/release and shortcuts.
+- Text input.
+- Correct mapping of image coordinates to the remote desktop.
+- Multiple display origins, negative coordinates and image scaling.
+- Ordered input within each session.
+- Tracking AI-held keys/buttons.
+- Checking both current control and permissions actually granted by the peer.
 
-人类接管后，AI 写入应明确拒绝，不能悄悄丢弃或留待下次取得控制权后补发。
+After human takeover, AI writes must fail explicitly, not disappear silently or wait for later control to be resent.
 
-## 8. 远程终端
+## 8. Remote terminals
 
-- 在正常 GUI 中打开可见的终端会话。
-- 创建、列举、调整尺寸和关闭终端。
-- 发送输入、读取输出。
-- 获取打开结果、错误和终端关闭事件。
-- 输出缓存有容量限制，避免无限增长。
-- 保留原始输出；是否另提供处理后的文本由上层决定。
-- 终端写入遵守控制权限制；人类接管期间 AI 仍可读取输出。
+- Open visible terminal sessions in the normal GUI.
+- Create, list, resize and close terminals.
+- Send input and read output.
+- Obtain open results, errors and closure events.
+- Bound output caches to prevent unlimited growth.
+- Preserve raw output; higher layers decide whether to add processed text.
+- Terminal writes follow control restrictions; AI may still read during human control.
 
-**底层是交互式终端，不承诺每条命令都有独立退出码。** Shell 退出码与单条命令退出码需要区分。
+**The underlying terminal is interactive and does not promise a separate exit code for every command.** Distinguish shell exit codes from per-command exit codes.
 
-## 9. 后续扩展
+## 9. Later extensions
 
-建议首版核心闭环通过后，再增加：
+After the initial core workflow passes, consider:
 
-| 类别 | 能力 |
+| Category | Capabilities |
 | --- | --- |
-| 文件管理 | 目录读取、上传下载、创建、删除、重命名 |
-| 文件任务 | 进度、覆盖确认、完成、失败、取消和恢复 |
-| 端口转发 | 创建、列举、关闭 TCP 隧道 |
-| 系统操作 | 锁屏、重启、请求提权 |
-| 会话控制 | 分辨率、画质、隐私模式、录制 |
-| 剪贴板 | 显式读取和写入，处理多会话与本机剪贴板的关系 |
+| File management | Directory reads, upload/download, create, delete, rename |
+| File jobs | Progress, overwrite confirmation, completion, failure, cancellation, recovery |
+| Port forwarding | Create, list and close TCP tunnels |
+| System actions | Lock, restart, request elevation |
+| Session controls | Resolution, quality, privacy mode, recording |
+| Clipboard | Explicit read/write with clear relationships among sessions and the local clipboard |
 
-允许调用某项能力，不代表被控端支持或授权；桥接层必须返回实际限制。
+Permission to call a capability does not mean the peer supports or authorizes it; the bridge must expose actual restrictions.
 
-## 10. 代码职责划分
+## 10. Code responsibilities
 
-### Rust 桥接层
+### Rust bridge
 
-负责：
+Responsible for:
 
-- 会话定位和生命周期。
-- 调用官方操作接口。
-- 收集连接、权限、画面、终端和文件事件。
-- 缓存和任务状态。
-- 输入顺序与人工接管。
-- AI 加入状态和控制权管理。
-- 将底层错误转换成可识别的结果。
+- Session lookup and lifecycle.
+- Calling official operation interfaces.
+- Collecting connection, permission, image, terminal and file events.
+- Caches and job state.
+- Input ordering and human takeover.
+- AI presence and control management.
+- Converting underlying failures into recognizable results.
 
-尽量独立于 MCP，使 GUI、测试或其他接口也能复用。
+Keep it as independent of MCP as practical so the GUI, tests or other interfaces can reuse it.
 
-### MCP 层
+### MCP layer
 
-负责官方 SDK 初始化、传输、认证、服务生命周期、参数校验、调用桥接层和响应转换。
+Handles official SDK initialization, transport, authentication, service lifecycle, argument validation, bridge calls and response conversion.
 
-不在 MCP 工具处理函数中重复实现远控逻辑。
+Do not reimplement remote-control logic in MCP tool handlers.
 
-### Flutter 层
+### Flutter layer
 
-负责 MCP 设置、运行状态、连接信息、AI 会话列表、AI 加入提示、控制模式、只读交互、接管按钮和批准界面。
+Handles MCP settings/runtime state, connection information, AI session lists, presence banners, control mode, read-only interaction, takeover buttons and approval UI.
 
-尽量保留原有人工远控流程。
+Preserve existing manual remote-control flows where practical.
 
-### 官方代码入口
+### Official entry points
 
-以下是此前核查 **1.4.9** 时找到的参考入口；实现时仍须核对固定提交上的调用语义，不能将入口清单视为已经完成桥接验证。
+These references were found during the earlier **1.4.9** inspection. Recheck call semantics at the pinned commit during implementation; this list is not completed bridge-validation evidence.
 
-| 文件 | 用途 |
+| File | Purpose |
 | --- | --- |
-| `src/flutter_ffi.rs` | 连接、认证、键鼠、终端、文件及其他主控操作 |
-| `src/ui_session_interface.rs` | `Session<T>`、`InvokeUiSession` 回调与会话操作 |
-| `src/flutter.rs` | GUI 事件、画面缓冲、终端响应 |
-| `src/client/io_loop.rs` | 通信事件和解码画面出口 |
-| `flutter/lib/desktop/pages/desktop_setting_page.dart` | 设置页参考入口 |
+| `src/flutter_ffi.rs` | Connection, authentication, keyboard/mouse, terminal, files and other controller operations |
+| `src/ui_session_interface.rs` | `Session<T>`, `InvokeUiSession` callbacks and session operations |
+| `src/flutter.rs` | GUI events, image buffers and terminal responses |
+| `src/client/io_loop.rs` | Communication events and decoded-frame output |
+| `flutter/lib/desktop/pages/desktop_setting_page.dart` | Settings-page reference entry |
 
-官方已有函数包括 `session_add_sync`、`session_login`、`session_send_mouse`、`session_input_key`、`session_open_terminal`、`session_send_files` 等。它们是内部接口，不是稳定的外部 SDK。
+Existing functions include `session_add_sync`, `session_login`, `session_send_mouse`, `session_input_key`, `session_open_terminal` and `session_send_files`. These are internal interfaces, not a stable external SDK.
 
-参考资料：
+References:
 
-- [官方 RustDesk 源码](https://github.com/rustdesk/rustdesk)
-- [1.4.9 主控接口](https://github.com/rustdesk/rustdesk/blob/1.4.9/src/flutter_ffi.rs)
-- [1.4.9 会话抽象](https://github.com/rustdesk/rustdesk/blob/1.4.9/src/ui_session_interface.rs)
+- [Official RustDesk source](https://github.com/rustdesk/rustdesk)
+- [1.4.9 controller interface](https://github.com/rustdesk/rustdesk/blob/1.4.9/src/flutter_ffi.rs)
+- [1.4.9 session abstraction](https://github.com/rustdesk/rustdesk/blob/1.4.9/src/ui_session_interface.rs)
 - [YaoxinCS/RustdeskMCP](https://github.com/YaoxinCS/RustdeskMCP)
-- [Yao 桥接实现](https://github.com/YaoxinCS/RustdeskMCP/blob/abbd7d1/src/agent_bridge.rs)
-- [RustDesk 1.4.9 官方发布](https://github.com/rustdesk/rustdesk/releases/tag/1.4.9)
-- [固定底座提交](https://github.com/rustdesk/rustdesk/commit/6c578292e8ebbbec708b76986ba8c4bc7c509747)
-- [官方 Rust SDK 3.3.0 发布](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.3.0)
-- [SDK 3.3.0 工具链要求](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml)
-- [MCP Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
-- [MCP ping 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/ping)
+- [Yao bridge implementation](https://github.com/YaoxinCS/RustdeskMCP/blob/abbd7d1/src/agent_bridge.rs)
+- [Official RustDesk 1.4.9 release](https://github.com/rustdesk/rustdesk/releases/tag/1.4.9)
+- [Pinned baseline commit](https://github.com/rustdesk/rustdesk/commit/6c578292e8ebbbec708b76986ba8c4bc7c509747)
+- [Official Rust SDK 3.3.0 release](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.3.0)
+- [SDK 3.3.0 toolchain requirements](https://github.com/modelcontextprotocol/rust-sdk/blob/rmcp-v3.3.0/Cargo.toml)
+- [MCP Streamable HTTP specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+- [MCP ping specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/ping)
 
-## 11. 首版验收标准
+## 11. Initial acceptance criteria
 
-以下完整范围均纳入首版，包括终端与多屏；首个验收环境为本机 macOS / ARM64。
+The complete scope below belongs to the first version, including terminals and multiple displays. The initial acceptance environment is local macOS / ARM64.
 
-### 基础能力
+### Core capabilities
 
-- [ ] 官方底座能够构建，并正常进行人工远控。
-- [ ] 设置页能启停 MCP，展示真实状态、地址和凭据。
-- [ ] AI 能打开或绑定可见会话，完成认证。
-- [ ] AI 能获取远端画面、发送输入并看到更新。
-- [ ] 多屏与缩放后的输入坐标正确。
-- [ ] 截图不影响 GUI 显示。
-- [ ] 终端输入、输出、错误和关闭状态正常。
-- [ ] 断线、权限拒绝和认证失败等状态明确。
-- [ ] 最小化、切换窗口和重连后的画面行为经过验证。
-- [ ] 官方被控端和现有引导器无需修改即可完成核心流程。
+- [ ] The official baseline builds and supports normal manual remote control.
+- [ ] Settings start/stop MCP and show actual state, address and credentials.
+- [ ] AI opens or attaches visible sessions and completes authentication.
+- [ ] AI reads remote images, sends input and observes updates.
+- [ ] Multi-display/scaled input coordinates are correct.
+- [ ] Screenshots do not disturb GUI rendering.
+- [ ] Terminal input, output, errors and closure state work.
+- [ ] Disconnect, permission denial and authentication failure are explicit.
+- [ ] Image behavior after minimize, window switching and reconnect is validated.
+- [ ] The official peer and existing bootstrapper complete core flows without modification.
 
-### 人机协作
+### Human/AI collaboration
 
-- [ ] AI 新建会话默认由 AI 控制。
-- [ ] AI 绑定已有会话保留控制模式，GUI 显示 AI 已加入。
-- [ ] AI 控制时，GUI 远端操作区域只读，鼠标及键盘限制生效。
-- [ ] 人类能随时通过明确入口接管。
-- [ ] 接管后排队 AI 写入停止，没有残留按键。
-- [ ] 人类控制时 AI 写入被拒绝，读取继续可用。
-- [ ] AI 能主动让出控制权，GUI 同步恢复人类操作。
-- [ ] AI 让出后仍保持加入状态，可以继续读取。
-- [ ] AI 接管工具正确遵守“是否需要批准”设置。
-- [ ] 默认需要人类批准；AI 新建会话仍默认由 AI 控制。
-- [ ] 批准请求在 60 秒后超时，重复请求不叠加或延长，拒绝、取消和迟到批准处理正确。
-- [ ] 多个 AI 可同时连接 MCP，并分别绑定不同的 RustDesk 会话；同一 AI 可管理多个会话且控制权相互独立。
-- [ ] 多个 AI 并发绑定同一个 RustDesk 会话时只有一个成功，其他 AI 收到占用错误；同一 AI 重复绑定不改变控制模式。
-- [ ] 人类接管或 AI 让出不释放会话的 AI 绑定归属，其他 AI 不能绕过归属检查操作该会话。
-- [ ] 某个 AI 解绑或失联仅清理其对应绑定，其他 AI 不受影响；释放后其他 AI 可显式绑定，旧请求和迟到清理不能影响新绑定。
-- [ ] AI 解绑、失联、MCP 停止和令牌重置后清除相应加入状态并归还人类控制，GUI 会话保留。
-- [ ] 远端重连或 AI 重新加入后不自动恢复控制权、旧批准和旧写入。
-- [ ] GUI 与桥接层的控制状态始终一致。
+- [ ] AI-created sessions default to AI control.
+- [ ] Attaching existing sessions preserves control mode and displays AI presence.
+- [ ] In AI mode, the GUI remote-interaction area is read-only with mouse/keyboard restrictions enforced.
+- [ ] Human takeover is always available through an explicit control.
+- [ ] Takeover stops queued AI writes without stuck keys.
+- [ ] AI writes fail under human control while reads remain available.
+- [ ] AI can release control; the GUI immediately restores manual operation.
+- [ ] AI stays attached after release and can keep reading.
+- [ ] AI acquisition obeys the approval-required setting.
+- [ ] Approval is required by default; AI-created sessions still start in AI control.
+- [ ] Approval expires after 60 seconds; repeated requests neither stack nor extend it; denial, cancellation and late approval are handled correctly.
+- [ ] Multiple AIs connect simultaneously and bind different sessions; one AI can manage multiple sessions with independent control.
+- [ ] Only one concurrent AI attachment to a session succeeds; others receive busy. Reattachment by the same AI preserves control mode.
+- [ ] Human takeover or AI release preserves AI binding ownership; other AIs cannot bypass ownership checks.
+- [ ] Detach/loss cleans only that AI's bindings. Others can explicitly attach afterward; old requests and late cleanup cannot affect the new binding.
+- [ ] Detach, lost AI, MCP stop and token reset clear relevant presence and return human control while preserving GUI sessions.
+- [ ] Peer reconnect or AI reattachment does not automatically restore control, old approval or old writes.
+- [ ] GUI and bridge control state remain consistent.
 
-### 服务与访问控制
+### Service and access control
 
-- [ ] MCP 设置页能分别显示多个 AI 逻辑会话，同名客户端也可区分；未绑定远控会话的连接仍可见。
-- [ ] AI 会话列表准确展示各自绑定的远端设备 ID、本地会话 ID、连接状态、控制模式和待批准请求，并与远程会话提示条同步。
-- [ ] 同一 AI 的并发 HTTP/SSE 连接不产生重复条目；AI 离开仅移除其条目，MCP 停止或令牌重置后清空旧连接。
-- [ ] 关闭 MCP 不破坏正常 GUI 会话，并清理待执行 AI 写入和输入状态。
-- [ ] 未授权调用不能操作会话。
-- [ ] 凭据不出现在普通日志中。
-- [ ] 配置保存和客户端重启后的服务行为一致。
-- [ ] 端口冲突显示真实失败，不自动换端口；复制配置反映实际生效地址。
-- [ ] 令牌重置使旧凭据及旧逻辑会话立即失效。
-- [ ] 活性探测不受长时间工具调用阻塞；临时 HTTP/SSE 连接变化不直接解绑，探测超时后完成清理。
+- [ ] Settings distinguish multiple logical AI sessions, including same-name clients; connections with no bindings remain visible.
+- [ ] The AI session list accurately shows each bound device ID, local session ID, connection state, control mode and pending approval, synchronized with session banners.
+- [ ] Concurrent HTTP/SSE connections from one AI do not duplicate entries. Departure removes only that AI; MCP stop/token reset clears old connections.
+- [ ] Stopping MCP preserves normal GUI sessions while cleaning pending AI writes/input.
+- [ ] Unauthorized calls cannot operate sessions.
+- [ ] Credentials do not appear in ordinary logs.
+- [ ] Saved configuration and client restart yield consistent service behavior.
+- [ ] Port conflicts report actual failure without automatic port changes; copied configuration reflects the effective address.
+- [ ] Token reset immediately invalidates old credentials and logical sessions.
+- [ ] Long tool calls do not block liveness probes; temporary HTTP/SSE changes do not immediately detach; probe expiry performs cleanup.
 
-## 12. 定稿范围与后续工作
+## 12. Finalized scope and subsequent work
 
-首版产品需求与 [MCP 接口与服务设计](MCP-API-DESIGN.md) 已共同定稿，以第二版接口方案作为实现基线：按能力拆分 20 个工具，使用 agent_id 和 session_ref，支持可选密码、有界等待、输入附图与终端写入附带读取。
+Initial product requirements and [MCP interface and service design](MCP-API-DESIGN.md) are jointly finalized. The second interface design is the implementation baseline: 20 capability-specific tools, agent_id and session_ref, optional passwords, bounded waits, input with attached images, and terminal writes with attached reads.
 
-两份文档分别规定产品行为与接口实现契约；接管前不要求认证完成或远端在线的规则已同步至第 3.9 节。后续如需改变已定稿的产品行为或接口契约，应同步更新相关文档并由需求方确认。
+The documents respectively define product behavior and implementation contracts. Section 3.9 reflects that acquisition does not require completed authentication or an online peer. Later changes to finalized behavior/contracts require corresponding documentation updates and project-owner confirmation.
 
-首次构建、Rust 类型与 schema 生成、SDK 集成、功能实现和远端实机验证属于后续执行工作。验收清单保持未勾选，不能将设计定稿视为实现完成。
+First build, Rust types/schema generation, SDK integration, implementation and live peer validation are subsequent execution tasks. Acceptance boxes remain unchecked; finalizing a design is not implementation completion.
 
-## 13. 实施顺序与估算
+## 13. Implementation sequence and estimate
 
-建议实施顺序：
+Suggested order:
 
-1. 官方构建跑通。
-2. 可见会话与截图。
-3. 键鼠闭环。
-4. 人机接管。
-5. 终端。
-6. 设置页完善与异常验证。
+1. Build the official baseline.
+2. Visible sessions and screenshots.
+3. Working keyboard/mouse flow.
+4. Human/AI takeover.
+5. Terminals.
+6. Complete settings and failure-case validation.
 
-此前约 **3,000～4,000 行手写实现代码**的估算仅作规划参考，不含测试、生成代码和上游源码。需要结合画面路径、平台差异及控制权实现重新评估。
+The earlier estimate of **3,000–4,000 handwritten implementation lines** is only a planning reference, excluding tests, generated code and upstream source. Reassess it against image paths, platform differences and control implementation.

@@ -1,49 +1,49 @@
-# MCP 文件传输与文本剪贴板
+# MCP file transfer and text clipboard
 
-对应 [文件传输 #2](https://github.com/NexusAgentX/rustdesk/issues/2) 和 [文本剪贴板 #4](https://github.com/NexusAgentX/rustdesk/issues/4)。仅修改控制端，沿用原版协议。
+Implements [file transfer #2](https://github.com/NexusAgentX/rustdesk/issues/2) and [text clipboard #4](https://github.com/NexusAgentX/rustdesk/issues/4). Only the controller changes; the stock protocol is retained.
 
-## 文件传输连接
+## File-transfer connections
 
-`rd_session_open` 支持 `kind: "file_transfer"`，打开可见的文件管理窗口。生命周期、认证、控制权和会话引用规则与桌面会话相同。可以传 `from_session_ref` 复用同一设备已认证连接的令牌；对端不接受令牌时，按返回的认证挑战调用 `rd_session_authenticate`。
+`rd_session_open` supports `kind: "file_transfer"` and opens a visible file-manager window. Lifecycle, authentication, control and session-reference rules match desktop sessions. `from_session_ref` can reuse an authenticated connection's token for the same peer. If the peer rejects the token, call `rd_session_authenticate` using the returned authentication challenge.
 
-| 工具 | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `rd_file_list` | `location: local/remote`、`path`、`include_hidden`；空远端路径表示主目录 |
-| `rd_file_transfer` | `direction: upload/download`；1..32 个源/目标路径对；递归传输目录 |
-| `rd_file_jobs` | 当前绑定拥有的任务状态 |
-| `rd_file_job_get` | 获取任务，按 `after_revision` 等待变化，目录按 `offset/limit` 分页 |
-| `rd_file_job_cancel` | 停止任务；已写入的部分文件可能保留 |
-| `rd_file_conflict_resolve` | 明确覆盖或跳过，可应用于该任务后续冲突 |
+| `rd_file_list` | `location: local/remote`, `path`, `include_hidden`; an empty remote path denotes the home directory |
+| `rd_file_transfer` | `direction: upload/download`; 1..32 source/destination path pairs; recursive directory transfer |
+| `rd_file_jobs` | State of jobs owned by the current binding |
+| `rd_file_job_get` | Fetch a job, wait for changes using `after_revision`, and paginate directories with `offset/limit` |
+| `rd_file_job_cancel` | Stop a job; partially written files may remain |
+| `rd_file_conflict_resolve` | Explicitly overwrite or skip, optionally applying the choice to later conflicts in that job |
 
-`destination_path` 是完整目标路径，不是父目录。远端路径使用远端系统格式。默认冲突策略 `ask`，也可指定 `overwrite` 或 `skip`。文件和空目录都通过原版文件协议处理；下载空目录需要对端支持 `ReadEmptyDirs`，不支持或超时会报告失败，不静默丢弃空目录。
+`destination_path` is the full destination path, not its parent directory. Remote paths use the remote OS format. The default conflict policy is `ask`; `overwrite` and `skip` are also available. Files and empty directories use the stock file protocol. Downloading empty directories requires peer support for `ReadEmptyDirs`; lack of support or timeout reports failure instead of silently dropping empty directories.
 
-传输工具返回任务，不代表传输完成。调用 `rd_file_job_get`，以 `completed/failed/cancelled/interrupted` 为结束状态；`awaiting_conflict` 需要决策。原版协议将单文件跳过报告为 `job_error: skipped`，本接口映射为 `completed`、`outcome: skipped`。控制权撤销、绑定失效或断线将中断活动任务。取消或中断不能回滚已经写入的文件或目录。断线后可在重连并恢复控制权后显式调用 `rd_file_job_resume`，详见 [文件管理与恢复](MCP-FILE-RECOVERY-DISPLAYS.md)。
+The transfer tool returns a job, not transfer completion. Query `rd_file_job_get`; terminal states are `completed/failed/cancelled/interrupted`, while `awaiting_conflict` requires a decision. The stock protocol reports a skipped file as `job_error: skipped`; this interface maps it to `completed`, `outcome: skipped`. Control revocation, invalid binding or disconnect interrupts active jobs. Cancellation/interruption cannot roll back files or directories already written. After disconnect, explicitly call `rd_file_job_resume` once reconnected with control restored; see [file management and recovery](MCP-FILE-RECOVERY-DISPLAYS.md).
 
-目录响应没有原生请求编号，同一会话仅允许一个未完成的目录元数据请求。单次响应最多返回 1000 项，使用 `next_offset` 继续读缓存。缓存限制为每目录 100000 项/8 MiB、总计 32 MiB；最多 128 个任务，新增或列举任务时清理结束超过 300 秒的记录。每次递归传输最多处理 4096 个空目录。等待参数上限 30000 ms，等待超时不等于空目录或传输成功。
+Directory responses have no native request ID, so only one directory-metadata request may be outstanding per session. Each response returns at most 1000 entries; use `next_offset` to continue reading the cache. Cache limits are 100000 entries/8 MiB per directory and 32 MiB total. At most 128 jobs are retained; records completed over 300 seconds ago are removed when adding or listing jobs. Each recursive transfer handles at most 4096 empty directories. Waits are capped at 30000 ms; timeout does not mean an empty directory or a successful transfer.
 
-## 文本剪贴板
+## Text clipboard
 
-| 工具 | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `rd_clipboard_settings_get/set` | 查询/设置明确的 `enabled` 值；作用范围为 `peer_preference`，立即应用并持久化到设备偏好 |
-| `rd_clipboard_read` | 返回最近收到的远端文本、来源、接收时间、连接代次和版本；可按版本等待变化 |
-| `rd_clipboard_write` | 向远端发送文本，可选 `paste: true` 和 `delay_ms` |
-| `rd_clipboard_type` | 发送指定文本的按键；省略 `text` 时读取本机文本剪贴板 |
+| `rd_clipboard_settings_get/set` | Read/set an explicit `enabled` value; scope is `peer_preference`, applied immediately and persisted for the peer |
+| `rd_clipboard_read` | Return the most recently received remote text, source, receipt time, connection epoch and revision; optionally wait for a revision change |
+| `rd_clipboard_write` | Send text to the peer, with optional `paste: true` and `delay_ms` |
+| `rd_clipboard_type` | Send keystrokes for specified text; omit `text` to read the local text clipboard |
 
-原版协议不提供主动读取远端剪贴板或写入结果确认。`read` 的来源固定为 `remote_sync`；未收到当前绑定、当前连接的文本时返回 `known: false`，不会以本机剪贴板冒充远端内容。缓存有效期 300 秒，最多 32 个会话，每段文本最多 1 MiB。相同文本不产生新的变化版本。远端清空剪贴板是否发送同步事件取决于原版实现，缓存不是实时查询结果。
+The stock protocol cannot actively read the remote clipboard or acknowledge a completed write. `read` always reports source `remote_sync`. If no text has arrived for the current binding and connection, it returns `known: false` rather than substituting local clipboard contents. Cache lifetime is 300 seconds, with at most 32 sessions and 1 MiB per text value. Identical text does not create a new revision. Whether clearing the remote clipboard sends a synchronization event depends on the stock implementation; the cache is not a live query result.
 
-`write` 最多 1 MiB UTF-8，支持空字符串；返回 `delivery: sent` 只表示消息交给连接。可选粘贴默认等 200 ms，macOS 用 Command+V，其余平台用 Ctrl+V。延时不是应用接收确认；写入后粘贴失败返回部分执行。`type` 使用既有键盘输入链路，上限 16 KiB，不依赖文本同步开关。CRLF/LF/CR 转换为 Enter，制表符转换为 Tab；实际行为取决于输入焦点所在控件。
+`write` accepts up to 1 MiB of UTF-8, including an empty string. `delivery: sent` means only that the message was handed to the connection. Optional paste waits 200 ms by default and uses Command+V on macOS or Ctrl+V elsewhere. The delay is not an application receipt acknowledgement; paste failure after a write reports partial execution. `type` uses the existing keyboard path, has a 16 KiB limit and does not depend on the text-sync switch. CRLF/LF/CR become Enter and tabs become Tab; actual behavior depends on the focused control.
 
-文本同步读写要求对端剪贴板权限且本地同步已启用，不允许浏览模式。按键输入另要求键盘权限。写操作要求当前 AI 控制权；查询不抢占人工控制。不同绑定、重连代次的缓存不能混读。文件剪贴板接口见 [原生文件剪贴板](MCP-FILE-RECOVERY-DISPLAYS.md)。
+Text-sync reads and writes require remote clipboard permission and locally enabled synchronization, outside view-only mode. Keystroke input additionally requires keyboard permission. Writes require current AI control; queries do not take control from the human. Caches from different bindings or connection epochs cannot be mixed. See [native file clipboard](MCP-FILE-RECOVERY-DISPLAYS.md) for file clipboard interfaces.
 
-Windows 文本按键按每个字符约 10 ms 发送，避免原版 Unicode 连续注入在现代记事本中重复字符。自动节奏与显式等待合计不得超过 30 秒；超限在发送前拒绝，需拆分文本或使用剪贴板粘贴。普通键和修饰键统一使用物理按键编码，避免快速组合键混合两种注入方式。
+Windows text keystrokes are paced at approximately 10 ms per character to avoid duplicate characters from consecutive stock Unicode injection in modern Notepad. Automatic pacing plus explicit waits must not exceed 30 seconds; excessive input is rejected before sending and must be split or pasted through the clipboard. Ordinary keys and modifiers both use physical key codes to avoid mixing injection methods in rapid shortcuts.
 
-## 验证
+## Validation
 
-- 47 项 automation 测试及 11 项 MCP 测试通过，含目录分页、绑定隔离、中断唤醒、危险路径拒绝、Unicode/空文本缓存、物理修饰键和换行处理。
-- 原版 Windows RustDesk 1.4.9：双向目录和多文件传输通过；中文/空格路径、隐藏文件、二进制文件、空文件、空目录均验证，下载内容以 SHA-256 核对。
-- 手动及自动覆盖/跳过、取消、撤销控制权、断开与重连后的任务状态通过；有意跳过不误报失败。
-- 远端 PowerShell 独立核对中文多行及空文本剪贴板；同步开关、等待超时、重新绑定后缓存隔离通过。
-- 远端记事本实测指定文本按键、本机剪贴板按键和自动粘贴，复制后读回逐字核对通过。浏览模式下剪贴板和键盘输入拒绝、能力报告及原设置恢复通过。
-- 首版会话、截图、控制权、操作去重/隔离、断开重连和终端回归通过；macOS ARM64 构建、Flutter 打包及签名验证通过。
-- 被控端本地关闭剪贴板权限后，读取、写入、开启同步均返回 `PERMISSION_DENIED`；能力查询同步标记不可用，键鼠权限保持有效。原版连接管理器会拦截远程修改权限的点击，本项由被控端本地人工切换权限后验证；重新授权后，能力查询和剪贴板读取恢复正常。
+- 47 automation tests and 11 MCP tests passed, including directory pagination, binding isolation, interruption wakeups, dangerous-path rejection, Unicode/empty-text caching, physical modifiers and newline handling.
+- Stock Windows RustDesk 1.4.9: bidirectional directory/multi-file transfers passed for Chinese/spaced paths, hidden files, binary files, empty files and empty directories. Downloads were verified by SHA-256.
+- Manual/automatic overwrite and skip, cancellation, control revocation, disconnect and post-reconnect job state passed; intentional skips were not reported as failures.
+- Remote PowerShell independently verified Chinese multiline and empty clipboard text. Sync switching, wait timeout and cache isolation after rebinding passed.
+- Remote Notepad testing covered specified-text keystrokes, local-clipboard keystrokes and automatic paste, with copied-back text verified character by character. Clipboard/keyboard rejection in view-only mode, capability reporting and restoration of original settings passed.
+- Initial session, screenshot, control, operation deduplication/isolation, disconnect/reconnect and terminal regression checks passed, along with macOS ARM64 build, Flutter packaging and signature verification.
+- After clipboard permission was disabled locally on the controlled machine, reads, writes and enabling synchronization returned `PERMISSION_DENIED`; capability queries marked it unavailable while keyboard/mouse permission remained valid. The stock connection manager blocks remote clicks that change permissions, so this test used a person locally changing the permission. Capability queries and clipboard reads recovered after permission was restored.

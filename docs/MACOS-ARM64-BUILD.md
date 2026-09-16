@@ -1,36 +1,36 @@
-# macOS ARM64 构建基线
+# macOS ARM64 build baseline
 
-本阶段先验证 RustDesk 1.4.9 的官方 Flutter 客户端，再接入 MCP。产品范围见 [主控客户端需求](MCP-CONTROLLER-REQUIREMENTS.md)，接口契约见 [MCP 设计](MCP-API-DESIGN.md)。
+This stage validates the official RustDesk 1.4.9 Flutter client before integrating MCP. See [controller requirements](MCP-CONTROLLER-REQUIREMENTS.md) for product scope and [MCP design](MCP-API-DESIGN.md) for interface contracts.
 
-## 固定输入
+## Pinned inputs
 
-| 项目 | 版本或提交 |
+| Item | Version or commit |
 | --- | --- |
 | RustDesk | `1.4.9` / `6c578292e8ebbbec708b76986ba8c4bc7c509747` |
 | hbb_common | `7e1c392c62d39c364127307cd408421dd5f8cfb0` |
 | Flutter | `3.24.5` / `dec2ee5c1f98f8e84a7d5380c05eb8a3d0a81668` |
-| Rust 基线工具链 | `1.81.0`，来自该版本官方 macOS CI |
+| Baseline Rust toolchain | `1.81.0`, from this version's official macOS CI |
 | vcpkg | `120deac3062162151622ca4860575a33844ba10b` |
-| vcpkg triplet | `arm64-osx`，使用仓库原有 manifest 与 overlay ports |
-| NASM | `2.16.03`；官方 CI 明确要求 2.x |
-| Flutter Rust Bridge 生成器 | `1.80.1`，启用 `uuid` |
+| vcpkg triplet | `arm64-osx`, using the repository's existing manifest and overlay ports |
+| NASM | `2.16.03`; official CI explicitly requires 2.x |
+| Flutter Rust Bridge generator | `1.80.1`, with `uuid` enabled |
 | cargo-expand | `1.0.95` |
-| macOS 构建目标版本 | `12.3`，与官方 ARM64 CI 一致 |
-| Rust 功能 | `flutter,hwcodec,unix-file-copy-paste,screencapturekit` |
+| macOS deployment target | `12.3`, matching official ARM64 CI |
+| Rust features | `flutter,hwcodec,unix-file-copy-paste,screencapturekit` |
 
-Rust 1.81.0 仅用于官方构建基线。后续 rmcp 接入需要至少 Rust 1.88，应在基线通过后单独升级和验证。Rust 和 Dart 依赖分别使用仓库的 Cargo.lock 与 pubspec.lock，不为解决下载问题更新版本。
+Rust 1.81.0 is only for the official build baseline. Later rmcp integration needs at least Rust 1.88 and should be upgraded and validated separately after the baseline passes. Rust and Dart dependencies use the repository's Cargo.lock and pubspec.lock respectively; download problems are not grounds for updating versions.
 
-### 首次解析的锁文件修正
+### Initial lockfile correction
 
-上游 pubspec.lock 与该标签的 pubspec.yaml / Flutter 3.24.5 不一致，首次 `flutter pub get --enforce-lockfile` 报错。使用固定 SDK 执行一次离线 pub get 后重新锁定，共调整 16 个依赖条目：补齐已有 flutter_test 开发依赖及其传递依赖，并将测试链的 async、matcher、test_api 等版本对齐 SDK；vector_math 仅修正为已有的直接依赖分类。所有 Git 依赖提交保持不变，未修改 pubspec.yaml。
+Upstream pubspec.lock was inconsistent with the tag's pubspec.yaml / Flutter 3.24.5, causing the first `flutter pub get --enforce-lockfile` to fail. One offline pub get with the pinned SDK regenerated the lockfile, adjusting 16 dependency entries: completing the existing flutter_test development dependency and its transitive dependencies, and aligning async, matcher, test_api and other test-chain versions with the SDK. vector_math only changed classification to reflect its existing direct dependency. Git dependency commits and pubspec.yaml were unchanged.
 
-此后继续用 `--enforce-lockfile` 验证，避免后续构建隐式刷新依赖。这是构建所需的依赖解析变更；涉及共享 Dart 库的版本变化仍需由后续 GUI 编译和运行验收覆盖。
+Continue validating with `--enforce-lockfile` to prevent implicit dependency refreshes. This resolution change is required for the build; changes to shared Dart library versions still need subsequent GUI compilation and runtime validation.
 
-## 准备环境
+## Environment preparation
 
-需要完整 Xcode；仅安装 Command Line Tools 无法构建 Flutter macOS GUI。Xcode 安装、许可确认及首次初始化完成后，确认 `xcodebuild -version` 与 `xcodebuild -checkFirstLaunchStatus` 均成功。Apple 账户操作由本机用户完成。
+Full Xcode is required; Command Line Tools alone cannot build the Flutter macOS GUI. After installation, license acceptance and initial setup, verify that `xcodebuild -version` and `xcodebuild -checkFirstLaunchStatus` both succeed. Apple account interactions are performed by the local user.
 
-构建缓存默认位于 `$HOME/Library/Caches/rustdesk-build`，不修改全局 Flutter 或 Rust 默认版本。脚本支持 `RUSTDESK_BUILD_CACHE`、`FLUTTER_ROOT` 和 `VCPKG_ROOT` 覆盖路径。
+The build cache defaults to `$HOME/Library/Caches/rustdesk-build` without changing global Flutter or Rust defaults. Paths can be overridden with `RUSTDESK_BUILD_CACHE`, `FLUTTER_ROOT` and `VCPKG_ROOT`.
 
 ```bash
 brew install cmake ninja pkg-config cocoapods
@@ -42,9 +42,9 @@ git clone --depth 1 --branch 3.24.5 https://github.com/flutter/flutter.git \
   "$HOME/Library/Caches/rustdesk-build/flutter-3.24.5"
 ```
 
-vcpkg checkout 必须使用上表提交，然后执行 `bootstrap-vcpkg.sh -disableMetrics`。NASM 2.16.03 可从 [官方发布目录](https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/) 下载源码，在本机编译并安装到缓存下的 `nasm-install`。
+Check out vcpkg at the commit above, then run `bootstrap-vcpkg.sh -disableMetrics`. NASM 2.16.03 source is available in the [official release directory](https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/); build it locally and install it under `nasm-install` in the cache.
 
-生成器安装到缓存下，避免覆盖其他项目工具：
+Install generators under the cache to avoid replacing other projects' tools:
 
 ```bash
 cargo +1.81.0 install cargo-expand --version 1.0.95 --locked \
@@ -54,18 +54,18 @@ cargo +1.81.0 install flutter_rust_bridge_codegen --version 1.80.1 \
   --root "$HOME/Library/Caches/rustdesk-build/rust-tools"
 ```
 
-构建脚本为旧版桥接生成器单独设置 `RUST_LOG=info`；该版本仅接受 info/debug，继承其他日志级别会直接 panic。生成时禁用自动修改 lib.rs，使用官方已经存在的模块声明。
+The build script sets `RUST_LOG=info` specifically for the old bridge generator, which accepts only info/debug and panics if it inherits other levels. Generation disables automatic modification of lib.rs and uses the existing official module declaration.
 
-Flutter SDK 需要应用官方 RustDesk CI 的两项处理，仅作用于这份专用 SDK：
+Apply the following two official RustDesk CI adjustments only to this dedicated Flutter SDK:
 
-1. 应用仓库中的 `.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff`。
-2. 注释 `packages/flutter/lib/src/scheduler/binding.dart` 中的 `_setFramesEnabledState(false);` 调用，对应官方 macOS CI 的帧调度处理。
+1. Apply `.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff` from the repository.
+2. Comment out `_setFramesEnabledState(false);` in `packages/flutter/lib/src/scheduler/binding.dart`, matching the official macOS frame-scheduling adjustment.
 
-依据为固定底座的 `.github/workflows/flutter-build.yml` 和 `.github/workflows/bridge.yml`。官方 CI 的默认桥接产物由 Flutter 3.22.3 生成；本地先用客户端对应的 3.24.5 生成，必须通过后续 Rust 和 Flutter 编译验证，不能预先认定产物兼容。
+These steps follow `.github/workflows/flutter-build.yml` and `.github/workflows/bridge.yml` at the pinned baseline. Official CI's default bridge artifacts use Flutter 3.22.3. Local generation initially uses the client's 3.24.5 and must pass subsequent Rust and Flutter compilation; compatibility is not assumed in advance.
 
-## 分阶段执行
+## Staged execution
 
-从仓库根目录运行：
+Run from the repository root:
 
 ```bash
 scripts/build-macos-arm64.sh check
@@ -75,113 +75,113 @@ scripts/build-macos-arm64.sh rust
 scripts/build-macos-arm64.sh gui
 ```
 
-也可以使用 `all` 顺序执行全部阶段。失败即停止，不把最后一条复制命令成功误报为构建成功。各阶段可单独重跑，诊断日志存放在忽略目录 `build/macos-arm64/logs/`。
+Alternatively, `all` runs every stage in order. Stop on failure; a successful final copy command is not proof of build success. Stages can be rerun individually. Diagnostic logs go to the ignored `build/macos-arm64/logs/` directory.
 
-脚本用进程环境指定 ARM64、macOS 12.3 和 Rust 工具链；不改写官方 build.py、Cargo.toml、Podfile 或 Xcode 工程。GUI 阶段的预期产物为 `flutter/build/macos/Build/Products/Release/RustDesk.app`，不自动安装或替换 `/Applications/RustDesk.app`。
+The script selects ARM64, macOS 12.3 and the Rust toolchain through the process environment without rewriting official build.py, Cargo.toml, Podfile or Xcode projects. The expected GUI output is `flutter/build/macos/Build/Products/Release/RustDesk.app`; it does not automatically install or replace `/Applications/RustDesk.app`.
 
-复制 Rust 辅助程序 service 后，脚本重新执行本地 ad-hoc 签名并校验整个应用包，保留主程序原有 entitlements。此签名供本机开发验证使用，不是 Developer ID 签名或公证发布。
+After copying the Rust service helper, the script reapplies local ad-hoc signing and verifies the entire application, preserving the main executable's existing entitlements. This signature is for local development validation, not Developer ID signing or notarized distribution.
 
-首次构建如需手动执行 `pod install`，必须先等待 `flutter precache --macos` 完成，否则 Podfile 的 post-install 会因缺少 release FlutterMacOS.xcframework 失败。正常 gui 阶段由 Flutter 处理下载和 Pods 安装顺序。
+If the first build needs a manual `pod install`, wait for `flutter precache --macos` to finish first; otherwise the Podfile post-install fails because the release FlutterMacOS.xcframework is missing. In the normal gui stage, Flutter handles download and Pods installation order.
 
-本机启动检查使用：
+Local launch check:
 
 ```bash
 open -n "$PWD/flutter/build/macos/Build/Products/Release/RustDesk.app" --args --no-server
 ```
 
-`--no-server` 避免在没有现成服务时启动新的被控服务；它不隔离官方客户端的配置或已有 IPC 服务。用进程的完整可执行文件路径确认运行的是本地构建产物。
+`--no-server` avoids starting a new controlled-side service when none exists; it does not isolate the official client's configuration or existing IPC service. Verify the process's full executable path to confirm that the local build is running.
 
-## 基线验收
+## Baseline acceptance
 
-- [x] 原生依赖、桥接生成、Rust 编译和 Flutter GUI 构建均成功。
-- [x] 本地构建产物能启动，无缺失动态库或启动崩溃。
-- [ ] 使用官方被控端完成可见的人工远控、键鼠、截图观察及终端验证。
-- [ ] 记录测试设备、实际工具版本、命令、产物和失败限制。
+- [x] Native dependencies, bridge generation, Rust compilation and Flutter GUI build succeeded.
+- [x] The local build launches without missing dynamic libraries or startup crashes.
+- [ ] Validate visible manual remote control, keyboard/mouse, screenshot observation and terminals against an official controlled client.
+- [ ] Record test devices, actual tool versions, commands, artifacts and failure limitations.
 
-本阶段新增构建入口和记录，未修改既有远控源代码；pubspec.lock 对齐 SDK 改变了部分共享 Dart 依赖的解析版本，其影响需由 GUI 编译和运行验收覆盖。子模块初始化保持固定 gitlink，不引入上游提交变化。
+This stage adds a build entry point and records without changing existing remote-control code. Aligning pubspec.lock with the SDK changes some shared Dart dependency resolutions, requiring GUI compilation/runtime validation. Submodule initialization retains pinned gitlinks without introducing upstream commit changes.
 
-## 执行记录：2026-09-15
+## Execution record: 2026-09-15
 
-- 本机：macOS 26.6.2 / ARM64，Xcode 27.0（27A266a），macOS 27.0 SDK；Xcode 许可及首次初始化完成，构建脚本 check 阶段通过。
-- 原生依赖：vcpkg manifest 安装成功；抽查 libyuv、Opus、FFmpeg 静态库均含 ARM64 架构。
-- 工具：Flutter 3.24.5 / Dart 3.5.4、Rust 1.81.0、CocoaPods 1.17.0、CMake 4.4.3、Ninja 1.13.2、NASM 2.16.03；桥接生成器和 cargo-expand 使用上表版本。
-- Dart 依赖：修正锁文件后，离线 `pub get --enforce-lockfile` 通过；Git 依赖提交全部保持原值。
-- 桥接：Cargo 依赖补齐后生成成功，Rust、Dart 和 macOS C 头文件均已输出；ffigen 报告 SDK 头文件的 nullability 警告，未报告编译错误。
-- Rust：固定 1.81.0 工具链的 release 编译成功，耗时 6 分 59 秒；有既有未使用代码等警告，无编译错误。
-- GUI：Flutter release 构建成功；主程序、Rust 动态库和 service 均为 ARM64，主程序与 Rust 动态库的实际最低系统版本均为 12.3。CocoaPods 安装成功，插件版本未变；不保留仅由 CocoaPods 工具版本产生的锁文件尾注差异。
-- 打包：复制 service 后的首次签名校验发现新增文件未纳入密封资源；构建脚本补齐本地签名后，`codesign --verify --deep --strict` 通过。
-- 启动：本地产物以 `--no-server` 启动，进程路径确认来自工作区；观察到正常主界面与连接入口，原已安装客户端进程仍在运行。未授予额外屏幕录制权限。
-- 两次远控实测见下节；已覆盖基础终端 GUI 流程，多屏、重连、异常认证及 MCP 桥接行为仍未验收。
+- Host: macOS 26.6.2 / ARM64, Xcode 27.0 (27A266a), macOS 27.0 SDK. Xcode license acceptance and initial setup completed; the script's check stage passed.
+- Native dependencies: vcpkg manifest installation succeeded. Spot checks of libyuv, Opus and FFmpeg static libraries confirmed ARM64 slices.
+- Tools: Flutter 3.24.5 / Dart 3.5.4, Rust 1.81.0, CocoaPods 1.17.0, CMake 4.4.3, Ninja 1.13.2 and NASM 2.16.03. Bridge generator and cargo-expand versions are listed above.
+- Dart dependencies: offline `pub get --enforce-lockfile` passed after correcting the lockfile. Every Git dependency retained its original commit.
+- Bridge: generation succeeded after Cargo dependencies were available, producing Rust, Dart and macOS C headers. ffigen reported SDK-header nullability warnings, with no compilation errors.
+- Rust: release compilation with pinned 1.81.0 succeeded in 6 minutes 59 seconds. Existing unused-code and other warnings remained; there were no compilation errors.
+- GUI: Flutter release build succeeded. The main executable, Rust dynamic library and service are all ARM64; the main executable and Rust library both have an actual minimum OS version of 12.3. CocoaPods installation succeeded without plugin-version changes. Lockfile footer differences caused only by the CocoaPods tool version were not retained.
+- Packaging: the first signature check after copying service found that the new file was outside the sealed resources. After the script reapplied local signing, `codesign --verify --deep --strict` passed.
+- Launch: the local artifact started with `--no-server`, with its process path verified inside the workspace. The normal home screen and connection entry were visible; the previously installed client remained running. No additional screen-recording permission was granted.
+- Two live remote-control checks follow. They cover basic terminal GUI flow; multi-display behavior, reconnect, abnormal authentication and MCP bridging remain unaccepted at this stage.
 
-下载中出现过 TLS 中断，按相同 URL/提交重试并复用缓存；不因此更新锁定版本。详细日志保存在本机 `build/macos-arm64/logs/`，不纳入版本控制。
+Downloads encountered TLS interruptions. Retrying the same URLs/commits reused caches without changing pinned versions. Detailed logs remain locally in `build/macos-arm64/logs/`, outside version control.
 
-### 首次远控实测：Windows 7 测试设备
+### First live check: Windows 7 test device
 
-用户完成连接与认证后，在本地构建客户端中观察到远端桌面。通过本地产物进程的已建立 TCP 连接进一步核对会话所在进程；未记录设备密码。被控端的准确版本和来源尚未核验，不能据此认定官方被控端兼容验收全部通过。
+After the user connected and authenticated, the local build displayed the remote desktop. Established TCP connections of the local process further confirmed session ownership; the device password was not recorded. The exact peer version and provenance were not verified, so full compatibility with an official peer cannot be claimed.
 
-| 验证项 | 结果与范围 |
+| Check | Result and scope |
 | --- | --- |
-| 连接和画面 | 已观察到可见桌面、开始菜单和记事本随操作更新；认证由用户完成，未测错误密码。 |
-| 鼠标 | 开始菜单点击、原始尺寸及适应窗口下的点击正常；适应窗口下拖动记事本后，窗口位置按预期改变。 |
-| 键盘 | 自动化普通字母、数字、回车、退格可用；用户以实体键盘确认大写字母、数字及标点全部正常。 |
-| 自动化输入差异 | 当前电脑操作工具的 typeText / Shift 组合输入未完整保留大写及部分标点，原因未定位。不能将此现象判定为 RustDesk 人工键盘故障，也不能据此验收未来 MCP 输入。 |
-| 最小化与恢复 | 通过原生窗口菜单恢复后可见更新后的远端画面；未验证最小化期间的桥接帧读取，当前尚无桥接实现。 |
-| 终端 | GUI 终端入口能打开独立窗口；连接返回 `Remote terminal is not supported by the remote side`，确认后返回桌面会话。未创建可用 Shell，不能验收终端输入输出、尺寸调整和退出事件。 |
-| 多显示器 | 当前没有多屏切换入口，未覆盖多屏、负坐标及不同屏幕缩放。 |
-| 其他 | 滚轮、断线重连、权限拒绝和认证失败待测。 |
+| Connection and image | Desktop, Start menu and Notepad updated visibly in response to actions. Authentication was performed by the user; incorrect passwords were not tested. |
+| Mouse | Start-menu clicks worked at original size and fit-to-window. Dragging Notepad in fit-to-window moved it as expected. |
+| Keyboard | Automated ordinary letters, digits, Enter and Backspace worked. The user confirmed uppercase letters, digits and punctuation with a physical keyboard. |
+| Automation input differences | The current computer-use tool's typeText / Shift combinations lost some uppercase letters and punctuation; cause unknown. This is not established as a RustDesk manual-keyboard fault or acceptance evidence for future MCP input. |
+| Minimize/restore | Restoring through the native window menu showed an updated remote image. Bridge reads while minimized were not tested; no bridge existed yet. |
+| Terminal | The GUI entry opened a separate window; connection returned `Remote terminal is not supported by the remote side`, then returned to the desktop after acknowledgement. No usable shell was created, so I/O, resizing and exit events could not be accepted. |
+| Multiple displays | No display-switching entry was available. Multiple displays, negative coordinates and different scales were not covered. |
+| Other | Scroll wheel, disconnect/reconnect, permission denial and authentication failure remain to be tested. |
 
-固定源码在 Windows 上通过 portable-pty 的 ConPTY 能力检测决定是否公布终端支持（src/server/connection.rs）；当前依赖要求 Windows 10 October 2018 或更新系统。该 Windows 7 设备报告不支持终端，符合此限制。后续需要支持终端的被控端与多屏环境补验。
+On Windows, the pinned source advertises terminal support based on portable-pty ConPTY detection (src/server/connection.rs). The current dependency requires Windows 10 October 2018 or later. This Windows 7 device reported terminals unsupported, consistent with that restriction. Further checks need a terminal-capable peer and multiple displays.
 
-测试只在新建、未保存的记事本文档中输入文本，没有写入文件或改变远端系统配置。收尾时电脑操作工具两次返回 `noWindowsAvailable`，尽管 RustDesk 进程仍在且可读取远控窗口；临时记事本未关闭，留给用户处理。此工具定位问题不记为客户端崩溃。会话显示方式由原始尺寸切为适应窗口。
+Tests typed only into a new unsaved Notepad document, without writing files or changing remote system configuration. During cleanup the computer-use tool returned `noWindowsAvailable` twice, although RustDesk remained running and its remote-control window was readable. The temporary Notepad was left for the user to close. This tool-location problem is not recorded as a client crash. The session view changed from original size to fit-to-window.
 
-### 第二次远控实测：支持终端的 Windows 测试设备
+### Second live check: terminal-capable Windows device
 
-用户换机并完成桌面连接后，从会话工具栏打开“终端 (beta)”，出现可见 PowerShell 窗口。设备名标识为 Windows 10；具体系统构建号与被控端版本、来源尚未核验。
+After switching machines and connecting, the user opened Terminal (beta) from the session toolbar and a visible PowerShell window appeared. The device name indicated Windows 10; its exact OS build, RustDesk version and provenance were not verified.
 
-| 验证项 | 结果与范围 |
+| Check | Result and scope |
 | --- | --- |
-| 打开与输入输出 | 第一个终端出现 PowerShell 提示符；echo 回显及后续提示符正常，命令错误的中文输出可显示。 |
-| 尺寸同步 | mode con 初次返回 167 列 × 45 行；拖动缩小本机终端窗口后返回 126 列 × 35 行，确认尺寸已传到远端。 |
-| 多终端 | 使用加号创建第二个终端，两个终端分别有独立标签和提示符。 |
-| Shell 隔离 | 第一终端执行 sv rdtest first 并用 gv rdtest 读到 first；第二终端执行 gv rdtest 返回变量不存在。 |
-| Shell 主动退出 | 第二终端执行 exit 7 后自动关闭标签；第一终端仍能读取 rdtest，未受影响。GUI 自动关闭太快，未直接核验退出码数值 7；不能声称退出码传递已验收。 |
-| GUI 主动关闭 | 关闭剩余终端窗口后返回仍在连接的桌面会话；没有检查远端进程树，不能据此证明所有子进程均已回收。 |
-| 输出历史 | 用滚轮能回看首条回显及此前尺寸查询结果；未做缓存容量或截断压力测试。 |
-| 精确文本 | 电脑操作工具输入仍有标点丢失、额外空格和粘贴无效果的问题；精确字节输入、中文输入及 MCP 路径待独立验证。 |
+| Open and I/O | The first terminal showed a PowerShell prompt; echo and subsequent prompts worked, including Chinese command-error output. |
+| Size synchronization | mode con initially reported 167 columns × 45 rows. Shrinking the local terminal window changed it to 126 columns × 35 rows, confirming propagation to the peer. |
+| Multiple terminals | The plus button created a second terminal; each had its own tab and prompt. |
+| Shell isolation | The first terminal ran sv rdtest first and read first using gv rdtest. In the second terminal, gv rdtest reported the variable missing. |
+| Shell exit | exit 7 in the second terminal closed its tab automatically. The first could still read rdtest and was unaffected. The GUI closed too quickly to verify the numeric exit code 7, so exit-code delivery is not accepted by this check. |
+| GUI closure | Closing the remaining terminal window returned to the connected desktop. The remote process tree was not inspected, so cleanup of all child processes is not proven. |
+| Output history | Scrolling could revisit the first echo and earlier size-query results. Cache capacity and truncation were not stress-tested. |
+| Exact text | Computer-use input still lost punctuation, inserted spaces and failed to paste. Exact bytes, Chinese input and the MCP path need independent validation. |
 
-测试未执行文件或系统配置修改命令，仅查询控制台状态、回显、设置 Shell 临时变量及关闭测试终端。两份测试终端已关闭，桌面连接保留；显示方式切为适应窗口。
+No file or system-configuration modification commands were run: only console-state queries, echo, temporary shell variables and closing test terminals. Both test terminals were closed; the desktop remained connected, using fit-to-window.
 
-返回桌面后观察到两个差异：远端曾短暂出现含 QueryFullProcessImageNameW 字样的错误框，未取得完整正文，不能归因于终端关闭；电脑操作工具截图中出现黑块，切换缩放和刷新画面后仍有残留，但用户明确确认人工观看的画面正常。黑块记录为工具截图与人工观看的差异，原因尚未定位，不判定为 RustDesk 显示故障。这些截图不能作为未来桥接帧导出的验收证据。
+Two differences were observed after returning to the desktop. A remote error briefly mentioned QueryFullProcessImageNameW, but its full text was not captured and it cannot be attributed to terminal closure. Computer-use screenshots showed black blocks that partly remained after scaling changes and refresh, while the user explicitly confirmed the manually viewed image was normal. These blocks are recorded as a discrepancy between tool screenshots and human viewing, with cause unknown, not as a RustDesk rendering failure. They cannot validate future bridge frame export.
 
-## 桥接开发：会话观察与 CPU 帧缓存
+## Bridge development: session observation and CPU frame cache
 
-本节记录第一阶段（`df637a04d`）；后续的布局隔离与 PNG 导出进展见下一节。
+This section records the first stage (`df637a04d`). Layout isolation and PNG export follow in the next section.
 
-新增 `automation` Cargo feature，仅在 macOS 下编译桥接模块，默认关闭。它依赖 Flutter，但不启动 HTTP 服务、不提供 AI 写入，也没有新的 GUI 控件。运行中的既有客户端不会因源码编译自动获得这些能力。
+The new `automation` Cargo feature compiles the bridge only on macOS and is off by default. It depends on Flutter but starts no HTTP service, exposes no AI writes and adds no GUI controls. Compiling source does not automatically give these capabilities to an already-running client.
 
-### 已接入的内部路径
+### Integrated internal paths
 
-- 按实际核心会话的共享连接状态分配独立 `session_id`；同核心的多个 GUI UUID 归到同一记录，最后一个视图关闭后移除记录并拒绝迟到回调。远端 ID 与本地 ID 不混用。
-- IO loop 持有固定连接代次的观察句柄；重连、认证成功/失败、权限、显示器布局和断线事件更新桥接快照。桌面认证完成后仍等待有效首帧；终端就绪由认证与终端能力决定。未知权限保留为未知。
-- 状态修订与帧修订使用独立 watch 通道；连续视频帧不持续唤醒状态查询。订阅后再读快照，避免等待时丢失更新。
-- 仅显式启用内部帧订阅后复制 CPU 像素，按会话与显示器保存；像素使用独立内存，携带格式、stride、连接/布局代次、帧序号、单调时间及光标是否已嵌入等原始元数据。读取不会消费 GUI 缓冲。
-- 每帧上限 128 MiB，总像素上限 512 MiB；缓存按最近读取时间淘汰，仍被读取者持有的帧继续计入预算。无法分配时返回容量错误，原 GUI 渲染继续。
-- 断线后允许读取同代次旧缓存并明确标为陈旧，重连开始时清空缓存；没有比较游标时，新旧比较值为未知。超过 2 秒的缓存也标为陈旧。
+- Allocate a distinct `session_id` using the shared connection state of each actual core session. Multiple GUI UUIDs for one core map to one record; removing the last view removes the record and rejects late callbacks. Remote and local IDs are not interchangeable.
+- The IO loop holds an observation handle for a fixed connection epoch. Reconnect, authentication success/failure, permissions, display layout and disconnect update the bridge snapshot. Desktop authentication still waits for a valid first frame; terminal readiness depends on authentication and terminal support. Unknown permissions stay unknown.
+- State revisions and frame revisions use separate watch channels; continuous frames do not repeatedly wake state queries. Subscribe before reading the snapshot to avoid missed updates while waiting.
+- CPU pixels are copied only after explicitly enabling internal frame subscription, stored by session and display in independent memory. Metadata retains format, stride, connection/layout epochs, frame sequence, monotonic time and whether a cursor is embedded. Reading does not consume the GUI buffer.
+- Limits are 128 MiB per frame and 512 MiB total pixels. Eviction follows most recent read time; frames still held by readers count toward the budget. Allocation failure returns a capacity error while ordinary GUI rendering continues.
+- After disconnect, old cache from the same epoch remains readable and is explicitly stale; reconnect clears it. Without a comparison cursor, new/old comparison is unknown. Cache older than 2 seconds is also stale.
 
-帧钩子实际放在 `Remote::new_video_thread` 的解码回调中，紧邻并先于 `FlutterHandler::on_rgba` 调用，因此同样覆盖软渲染和 CPU 像素上传纹理两条 GUI 路径。选择该位置是为了捕获对应 IO loop 的连接代次，无需修改共享 `InvokeUiSession` trait；旧解码线程不能把帧交给新连接的桥接缓存。
+The frame hook sits in `Remote::new_video_thread`'s decode callback, immediately before `FlutterHandler::on_rgba`. This covers both software rendering and GUI paths that upload CPU pixels into textures. This location captures the corresponding IO loop's connection epoch without modifying the shared `InvokeUiSession` trait; old decoder threads cannot populate a new connection's bridge cache.
 
-### 本阶段边界
+### Boundaries of this stage
 
-这只是内部观察基础，尚不能按首版截图或会话工具验收：
+This is internal observation infrastructure, not yet acceptance-ready screenshot or session tools:
 
-- 未接入 agent 绑定、session_ref、批准与接管、发送队列门控、可见会话创建请求、终端原始字节缓存或 MCP 服务。
-- 认证挑战的完整分类、人工确认事件、连接错误详情和 GUI 可见性仍待补齐；不能从当前观察状态推导 AI 写入许可。
-- 未接入图像编码、截图映射、显示器订阅并集或 GPU-only 到 CPU 路径的切换。纹理独占输出会明确标记 TextureOnly；当前不支持将此类会话绑定成可截图 AI 会话。
-- 布局变化会清空已有缓存；帧中的布局修订记录回调接收时的布局。布局变化期间解码队列中旧帧的完整隔离尚待实现，所以当前不向 AI 提供可用于输入的坐标映射。
-- 原始像素可能已有远端嵌入光标，当前如实标注；对外截图的统一光标规则需在截图工具上线前实现。
-- 还未对运行中的远控会话执行桥接导图验证；此前的人工远控及终端结果只属于官方底座验证。
+- No agent binding, session_ref, approval/takeover, send-queue gating, visible-session creation, terminal raw-byte cache or MCP service is integrated yet.
+- Complete authentication-challenge classification, human-confirmation events, connection-error details and GUI visibility remain incomplete. AI write permission cannot be inferred from current observations.
+- No image encoding, screenshot mapping, union of display subscriptions or GPU-only-to-CPU switching is integrated. Texture-only output explicitly reports TextureOnly; such sessions cannot currently bind as AI sessions with screenshots.
+- Layout changes clear the cache, while frames record the layout revision at callback receipt. Full isolation of queued old frames during layout changes remains unfinished, so no input-coordinate mappings are exposed to AI yet.
+- Raw pixels may already contain a cursor embedded by the peer, which is reported honestly. A consistent public screenshot cursor rule is needed before shipping the capture tool.
+- No bridge image has yet been exported from a running live session. Earlier manual desktop and terminal results validate only the official baseline.
 
-### 构建与验证
+### Build and validation
 
 ```bash
 RUSTDESK_AUTOMATION=1 scripts/build-macos-arm64.sh rust
@@ -189,58 +189,58 @@ scripts/build-macos-arm64.sh gui
 scripts/build-macos-arm64.sh automation-tests
 ```
 
-不设置 `RUSTDESK_AUTOMATION=1` 时，rust 阶段继续使用原先四项构建 features。桥接无新增第三方依赖，仍使用 Rust 1.81.0。
+Without `RUSTDESK_AUTOMATION=1`, the rust stage keeps the original four features. The bridge adds no third-party dependencies and still uses Rust 1.81.0.
 
-- `cargo check --locked`：分别开启 automation 与关闭 automation，均通过。
-- `automation::` release 单元测试：11 项全部通过。覆盖 GUI 缓冲交换不影响快照、帧租用计入预算、未读取的视频更新不挤占最近读取的显示器、认证与首帧分离、过期连接回调拒绝、布局缓存失效与断线陈旧标记、终端无首帧就绪、非法像素与纯纹理明确失败、CPU 转纯纹理时清理旧缓存并唤醒读取、分离的状态/帧等待、多 GUI 视图共同生命周期。
-- 含 automation 的 Rust release 与 Flutter GUI 构建均通过；GUI 产物约 62.3 MB，打包后的 `codesign --verify --deep --strict` 通过。未重启正在运行的客户端，因此本轮不包含新桥接的实际远控验证。
+- `cargo check --locked` passed with automation enabled and disabled.
+- All 11 `automation::` release unit tests passed: snapshots survive GUI buffer swaps, leased frames count toward limits, unread updates do not evict recently read displays, authentication and first-frame readiness are separate, expired callbacks are rejected, layout invalidation and disconnected staleness work, terminal readiness needs no frame, invalid pixels/texture-only frames fail explicitly, CPU-to-texture-only transition clears cache and wakes readers, state/frame waits are separate, and multiple GUI views share lifecycle.
+- Rust release with automation and Flutter GUI builds passed. The GUI artifact was approximately 62.3 MB; packaged `codesign --verify --deep --strict` passed. The running client was not restarted, so this round includes no live remote-control validation of the new bridge.
 
-### 既有路径的回归范围
+### Regression surface in existing paths
 
-| 文件 | 必须变更的路径 |
+| File | Required path change |
 | --- | --- |
-| Cargo.toml、src/lib.rs | 声明默认关闭的新 feature 和 macOS 模块入口。 |
-| src/flutter.rs | GUI 视图注册、复用及移除时调用观察钩子；不修改渲染实现。 |
-| src/client/io_loop.rs | 添加仅新 feature 使用的观察句柄和连接/权限/布局/解码事件薄钩子；普通协议消息与输入发送实现未改写。 |
-| scripts/build-macos-arm64.sh | 显式环境变量可启用新 feature，默认构建选择不变。 |
+| Cargo.toml, src/lib.rs | Declare the new default-off feature and macOS module entry. |
+| src/flutter.rs | Call observation hooks when GUI views register, reuse or remove sessions; rendering is unchanged. |
+| src/client/io_loop.rs | Add an observer and thin connection/permission/layout/decode hooks used only by the new feature; ordinary protocol messages and input sending are not rewritten. |
+| scripts/build-macos-arm64.sh | Explicit environment selection enables the feature; default build selection is unchanged. |
 
-关闭 feature 时所有运行时钩子均不参与编译。新增逻辑位于 src/automation；未变更共享 trait、Session 结构、官方 FFI 签名、Flutter/Dart 代码、被控端协议或子模块。
+All runtime hooks compile out with the feature disabled. New logic resides in src/automation. Shared traits, the Session structure, official FFI signatures, Flutter/Dart code, peer protocol and submodules are unchanged.
 
-## 桥接开发：布局隔离与 PNG 导出
+## Bridge development: layout isolation and PNG export
 
-### 已实现
+### Implemented
 
-- 为每个视频解码线程保留独立的布局修订。官方布局事件改变几何信息后，先清空旧增量帧队列，再向解码消息队列放入布局边界；消费边界时重置解码器并等待关键帧，同时通过官方接口请求刷新。旧回调携带旧修订，不能重新填充新布局的桥接缓存。
-- 旧关键帧仍按原队列顺序消费，GUI 回调保持原入口；新的边界处理仅在 macOS automation 构建且存在观察会话时触发。对共享 MediaData 枚举只增加 cfg 限定的内部消息，未改动现有消息结构或回调签名。
-- 新增内部异步 `automation::capture::capture`：按实际显示器 ID 读取已启用的帧缓存，导出 PNG，并返回尺寸、远端矩形、连接/布局代次、帧序号、接收时间、年龄、新旧与断线标记。比较游标没有更新时返回 None，不重新包装成新画面。
-- 处理 BGRA / RGBA 和行填充；按远端桌面的不透明 RGB 像素编码。默认等比缩小至 1600 × 1600 边界，可设置 1～3840，不放大、不裁剪；PNG 输出超过 8 MiB 时整体失败，不返回截断图像。
-- 不合成独立光标，`cursor_composited=false`；原视频已嵌入的光标像素保留并标记。不会读取本机窗口截图。
-- 编码在 spawn_blocking 中进行，全局最多两个编码任务；取消调用后，未退出的编码任务仍持有名额。编码结束再次核对截图开关、会话状态及连接/布局代次。
-- 提供纯几何的截图像素中心到远端坐标换算，覆盖负原点、缩放和越界拒绝；不代表已取得输入权限，也不直接发送输入。
+- Each video-decoding thread retains its own layout revision. After a stock layout event changes geometry, old incremental frames are cleared and a layout boundary enters the decode-message queue. Consuming the boundary resets the decoder, waits for a keyframe and requests a stock refresh. Old callbacks carry old revisions and cannot refill the new-layout cache.
+- Old keyframes are still consumed in queue order, and GUI callbacks retain their existing entry. New boundary handling runs only in macOS automation builds with an observed session. The shared MediaData enum gains only a cfg-gated internal message; existing message structures and callback signatures are unchanged.
+- New internal async `automation::capture::capture` reads an enabled frame cache by actual display ID, exports PNG and returns dimensions, remote rectangle, connection/layout epochs, frame sequence, receipt time, age, new/old and disconnect markers. If the comparison cursor has not advanced, it returns None instead of presenting the same image as new.
+- Handles BGRA / RGBA and row padding, encoding opaque desktop RGB pixels. Default proportional downscaling fits 1600 × 1600; limits can be 1–3840. No upscaling or cropping. PNG output exceeding 8 MiB fails completely instead of returning truncated data.
+- Does not composite the separate cursor: `cursor_composited=false`. Cursor pixels already embedded in video are retained and annotated. Local window screenshots are not read.
+- Encoding runs in spawn_blocking, with at most two jobs globally. Cancelled calls retain a slot until their encoding job exits. Capture enablement, session validity and connection/layout epochs are rechecked after encoding.
+- Pure geometry maps screenshot pixel centers to remote coordinates, including negative origins, scaling and out-of-bounds rejection. This neither grants input permission nor sends input.
 
-### 验证与范围
+### Validation and scope
 
-- 关闭 automation 的 `cargo check --locked` 通过。
-- 最终 release 测试 19 项全部通过；含 automation 的 Rust release 与 Flutter GUI 构建通过，GUI 产物约 62.3 MB，打包后的 `codesign --verify --deep --strict` 通过。当前运行中的客户端未重启。
-- 测试使用独立像素缓冲和模拟会话事件；覆盖 PNG 解码后的颜色、行填充、尺寸边界、超限失败、双屏隔离、负坐标、旧布局回调拒绝，以及断线陈旧状态。尚未通过运行中的真实远端会话导出图片，不能据此验收完整多屏或 GUI 运行时回归。
-- 本机固定构建启用 hwcodec、不启用 vram。源码的 VP8 / VP9 / AV1 与 H264 / H265 RAM 解码路径输出 CPU 像素；GUI 后续使用纹理渲染不消耗桥接副本。GPU-only 绑定切换或回读未实现；不能将其他 features 组合中的 TextureOnly 状态视为可截图。
-- 仍需接入显示器订阅并集、主屏解析、有界等待和官方刷新策略、agent 绑定的 snapshot_id / 映射过期管理及 MCP image block。当前内部函数不暴露为 MCP 工具，不提供 AI 输入。
+- `cargo check --locked` passed with automation disabled.
+- All 19 final release tests passed. Rust release with automation and Flutter GUI builds passed; the GUI artifact was approximately 62.3 MB and packaged `codesign --verify --deep --strict` passed. The running client was not restarted.
+- Tests used independent pixel buffers and simulated session events, covering decoded PNG colors, padding, dimension limits, oversized failures, display isolation, negative coordinates, old-layout callback rejection and stale disconnected state. No images were exported from a live running peer, so full multi-display or GUI runtime regression acceptance cannot be claimed.
+- The fixed local build enables hwcodec and disables vram. VP8 / VP9 / AV1 and H264 / H265 RAM decode paths output CPU pixels; subsequent GUI texture rendering does not consume the bridge copy. GPU-only switching/readback is unimplemented. TextureOnly in other feature combinations is not capture-ready.
+- Unioned display subscriptions, primary-display resolution, bounded waits and stock refresh policy, agent-bound snapshot_id / mapping expiry and MCP image blocks still need integration. Current internal functions are not MCP tools and expose no AI input.
 
-### 本轮既有路径的回归范围
+### Regression surface for this round
 
-| 文件 | 行为变化及必要性 |
+| File | Behavior change and necessity |
 | --- | --- |
-| src/client.rs | 解码消息循环新增 automation 布局边界分支，负责重置解码器与等待关键帧；必须在解码线程消费消息的位置建立边界，防止缓存清空后旧解码结果回流。 |
-| src/client/io_loop.rs | 布局事件同步到各解码线程，必要时请求刷新；解码回调携带线程实际应用的布局修订。新增状态只用于 automation，未改写原有视频消息发送、GUI 渲染或输入路径。 |
-| src/automation/sessions.rs | 接收帧时检查布局修订，导图完成时复查会话有效性；用于拒绝过期画面。 |
-| src/automation/mod.rs | 注册新增的导图与解码布局模块。 |
+| src/client.rs | Add an automation layout-boundary branch to the decode loop, resetting the decoder and waiting for a keyframe. The boundary must be consumed in the decoding thread to stop old decoded results repopulating a cleared cache. |
+| src/client/io_loop.rs | Forward layout events to decoder threads and request refresh when needed. Decode callbacks carry the revision actually applied by that thread. New state is automation-only; existing video-message sending, GUI rendering and input paths are not rewritten. |
+| src/automation/sessions.rs | Check layout revision on frame receipt and session validity after export, rejecting stale images. |
+| src/automation/mod.rs | Register the new capture and decode-layout modules. |
 
-本轮无新增依赖、FFI / Dart 变更、被控端协议变更或子模块更新。automation 关闭时仍编译原路径。
+No new dependencies, FFI / Dart changes, peer-protocol changes or submodule updates in this round. Disabling automation still compiles the original paths.
 
 
-## MCP 集成构建与验证
+## MCP integration build and validation
 
-MCP 使用独立的 `mcp` 功能开关，默认构建仍保留官方路径。macOS ARM64 的 MCP 构建使用 Rust 1.97.1、官方 `rmcp =3.3.0` 和 Axum 0.8，复用上面的 Flutter、原生依赖及固定官方提交。
+MCP uses a separate `mcp` feature; default builds retain the official path. The macOS ARM64 MCP build uses Rust 1.97.1, official `rmcp =3.3.0` and Axum 0.8, reusing the Flutter/native dependencies and pinned upstream commit above.
 
 ```bash
 RUSTDESK_MCP=1 scripts/build-macos-arm64.sh bridge
@@ -248,7 +248,7 @@ RUSTDESK_MCP=1 scripts/build-macos-arm64.sh rust
 RUSTDESK_MCP=1 scripts/build-macos-arm64.sh gui
 ```
 
-复现 MCP 构建配置下的两组测试：
+Reproduce the two test groups under the MCP build configuration:
 
 ```bash
 source scripts/build-macos-arm64.sh check
@@ -256,58 +256,58 @@ RUSTUP_TOOLCHAIN=1.97.1 cargo test --locked --release --lib --features mcp,hwcod
 RUSTUP_TOOLCHAIN=1.97.1 cargo test --locked --release --lib --features mcp,hwcodec,unix-file-copy-paste,screencapturekit mcp::
 ```
 
-Rust 1.97.1 的符号剥离会产生未按 8 字节对齐的 Mach-O LINKEDIT 字符串表，被 Xcode 27 链接器拒绝，详见 [Rust 上游问题 #157750](https://github.com/rust-lang/rust/issues/157750)。脚本仅对 MCP 构建中的 RustDesk 包覆盖 `profile.release.package.rustdesk.strip="none"`，不修改其他平台或官方基线的 release 配置。已验证实际动态库字符串表对齐为 0（模 8），最小动态库加载也通过。
+Rust 1.97.1 stripping can produce a Mach-O LINKEDIT string table without 8-byte alignment, rejected by the Xcode 27 linker; see [Rust issue #157750](https://github.com/rust-lang/rust/issues/157750). The script overrides `profile.release.package.rustdesk.strip="none"` only for the RustDesk package in MCP builds, leaving other platforms and the official baseline's release profile unchanged. The actual dynamic-library string-table alignment was verified as 0 modulo 8, and a minimal dynamic-library load passed.
 
-最终源代码验证：
+Final source validation:
 
-- 桥接测试 38 项通过：连接与认证状态分离、帧缓存和多屏几何、重连/布局隔离、控制权代次、终端原始输出及缓存覆盖、实体键映射，以及接管后立即唤醒等待中的输入、释放按键并拒绝旧发送队列；关闭会话仍可在保留期内读取完成记录。
-- MCP 测试 5 项通过：严格参数、精确 Bearer 匹配、真实 HTTP 初始化与双客户端隔离、20 个工具输入/输出 schema、Origin/正文限制、并发 operation ID 重试及原始结果重放；工具响应容量耗尽时心跳和取消通知仍可处理。
-- Flutter 静态分析无 error；仍有上游既有警告和提示。关闭新功能的官方路径使用 Rust 1.81.0，`cargo check --locked` 通过。
-- 最终 Rust release（动态库与程序）和 Flutter GUI 构建通过，产物约 71.5 MB，`codesign --verify --deep --strict` 通过。重启最终产物后，实际 HTTP 初始化、会话列举、设置页 running 状态及 agent 列表均正常。
-- 对变更文件、联调脚本与构建日志检查临时密码，匹配数为 0。测试连接已清理，MCP 服务在最终交付时关闭，默认人工批准仍保持开启。
+- 38 bridge tests passed: connection/authentication separation, frame cache and multi-display geometry, connection/layout isolation, control epochs, raw terminal output and cache overwrite, physical key mapping, immediate wakeup of waiting input on takeover, key release and rejection of old queued sends. Completed records remained readable within retention after session closure.
+- 5 MCP tests passed: strict arguments, exact Bearer matching, real HTTP initialization and two-client isolation, input/output schemas for 20 tools, Origin/body limits, concurrent operation-ID retries and original-result replay. Heartbeats and cancellation notifications remained usable when tool-response capacity was exhausted.
+- Flutter static analysis had no errors, with existing upstream warnings/notices remaining. The official path with the new features disabled passed `cargo check --locked` using Rust 1.81.0.
+- Final Rust release (library and executable) and Flutter GUI builds passed; artifact size was approximately 71.5 MB and `codesign --verify --deep --strict` passed. After restarting the final artifact, real HTTP initialization, session listing, settings-page running status and agent lists all worked.
+- Checks of changed files, integration scripts and build logs found zero occurrences of the temporary password. Test connections were cleaned up, MCP was stopped at final delivery and default human approval remained enabled.
 
-本轮被控端由用户提供，为支持终端的 Windows 10 单屏设备。设备临时密码不保存到文档、脚本或普通日志。真实双显示器验收尚无设备，当前多屏证据仅来自自动化几何与缓存隔离测试。
+The user supplied a terminal-capable Windows 10 single-display peer for this round. Its temporary password was not saved in documentation, scripts or ordinary logs. No real dual-display device was available; multi-display evidence at this stage comes only from automated geometry/cache-isolation tests.
 
 
-### MCP 实机联调记录（2026-09-15）
+### MCP live integration record (2026-09-15)
 
-以下结果来自本地 MCP 构建连接用户提供的 Windows 10 单屏测试机。临时密码只用于认证请求，没有保存到测试脚本、本文档或普通日志；测试文本仅输入未保存的记事本，终端使用回显、Shell 临时变量、只读版本查询和显式退出。测试结束已关闭临时记事本且未保存文件。远端只读查询报告 Windows 10.0.19045、RustDesk 1.4.9+67；没有核验其二进制哈希。
+These results came from the local MCP build connected to the user's Windows 10 single-display test machine. Temporary passwords were used only in authentication requests, not saved in scripts, this document or ordinary logs. Test text went into unsaved Notepad; terminal operations used echo, temporary shell variables, read-only version queries and explicit exit. Temporary Notepad was closed without saving. Read-only remote queries reported Windows 10.0.19045 and RustDesk 1.4.9+67; binary hashes were not verified.
 
-| 验证项 | 已观察结果 |
+| Check | Observed result |
 | --- | --- |
-| 服务与 agent | GUI 启停对应真实监听；两个 MCP 客户端同时连接，设置页分别显示名称、版本、agent_id、绑定的核心会话与 GUI / 终端实例。 |
-| 会话独占 | 第二个 agent 绑定已占用的桌面返回 SESSION_BUSY；仍可独立打开同设备的终端连接。解绑后另一 agent 可绑定，保留 Human 模式；原引用不可读取新绑定。 |
-| 可见桌面与图片 | AI 创建可见桌面，返回 authenticated / ready；截图为远端解码 PNG，980 × 606，包含真实帧序号和时间。读取与 GUI 同时显示，未消费 GUI 渲染缓冲。 |
-| 输入 | MCP 打开运行窗口及记事本；精确文本 ABC abc 123 . : 和中文显示正确；实体 Shift + A / 释放 Shift + B 得到 Ab。远端中文输入法仍按自己的规则处理实体键。 |
-| 缩放坐标 | 490 × 303 截图上的菜单坐标正确映射到 980 × 606 桌面；点击命中预期菜单。 |
-| 重试 | 同一 operation_id 重试文本输入不重复发送；终端计数自增重试只得到 RD_COUNTER=1。 |
-| 人工接管 | AI 模式 GUI 点击和文字输入被阻挡；人工接管后 AI 写入返回 HUMAN_CONTROL，读取仍可用。保持按住的 Shift 被释放。持续拖动测试中实际点击 GUI 接管，活动批次部分执行后停止，排队批次执行前被拒绝，二者均返回 CONTROL_EXPIRED；释放一个键与一个鼠标按钮，release_error 为 null。 |
-| 接管批准 | 主动让出、GUI 批准、旧引用 CONTROL_EXPIRED 均已观察；重复申请保留相同批准 ID 与截止时间，未批准请求 60 秒后 expired；取消可重复调用，GUI 拒绝返回 rejected。终端密码弹窗显示时，提示条上的接管与批准按钮仍可点击。 |
-| 最小化 | GUI 状态变为 minimized；最小化后仍收到新的远端帧，时间与帧序号均更新。 |
-| 终端 | 可见终端创建、精确输入、原始 ANSI / UTF-8 / base64 输出、调整 PTY 为 100 × 30、第二实例创建与单独关闭均通过；另一个实例保持可用。Shell 执行 exit 7 后，关闭事件实际返回 shell_exit_code=7；此字段不解释为单条命令退出码。 |
-| 认证与重连 | 错误密码返回 awaiting_auth / Wrong Password；认证工具提交错误密码返回 AUTH_FAILED，提交当前挑战的正确密码后认证并打开终端。显式断开返回 disconnected / Human，旧终端记录 closed、未知退出码保持 null。重连后临时密码不被复用，返回新的认证挑战和控制引用。 |
-| 停止与离开 | MCP 停止后监听关闭、agent 清空、提示条消失，原 GUI 终端仍能执行人工输入 echo afterstop。DELETE 结束 MCP 逻辑会话后也撤销绑定，保留 GUI；无 GET 事件流且不回答 ping 的客户端租约到期后返回 HTTP 404，原会话可重新绑定且保持 Human。启用状态保存后退出并重启，服务自动恢复为 running。 |
+| Service and agents | GUI start/stop matched actual listeners. Two MCP clients connected simultaneously; settings showed each name, version, agent_id, bound core sessions and GUI / terminal instances. |
+| Session exclusivity | A second agent attaching to an occupied desktop got SESSION_BUSY but could independently open a terminal connection to the same peer. After detachment, another agent could bind with Human mode preserved; old references could not read the new binding. |
+| Visible desktop and images | AI created a visible desktop returning authenticated / ready. Screenshots were remotely decoded PNGs, 980 × 606, with actual frame sequence/time. Reads and GUI display coexisted without consuming GUI render buffers. |
+| Input | MCP opened Run and Notepad. Exact text ABC abc 123 . : and Chinese displayed correctly. Physical Shift + A / release Shift + B produced Ab. The remote Chinese input method still interpreted physical keys according to its own rules. |
+| Scaled coordinates | Menu coordinates in a 490 × 303 screenshot mapped correctly to the 980 × 606 desktop; clicks hit the intended menu. |
+| Retries | Text input retried with the same operation_id was not resent. Retrying a terminal counter increment produced only RD_COUNTER=1. |
+| Human takeover | GUI clicks/text were blocked in AI mode. After takeover, AI writes returned HUMAN_CONTROL while reads remained available. Held Shift was released. During a sustained drag, a real GUI takeover stopped the active batch after partial execution and rejected the queued batch before execution; both returned CONTROL_EXPIRED. One key and one mouse button were released, with release_error null. |
+| Approval | Release, GUI approval and old-reference CONTROL_EXPIRED were observed. Repeated requests retained the same approval ID/deadline; unapproved requests became expired after 60 seconds. Cancellation was repeatable and GUI denial returned rejected. Takeover/approval buttons remained clickable while the terminal password dialog was open. |
+| Minimize | GUI state became minimized; new remote frames continued to arrive with updated timestamps and sequences. |
+| Terminal | Visible creation, exact input, raw ANSI / UTF-8 / base64 output, PTY resize to 100 × 30, second-instance creation and independent closure passed. The other instance remained usable. exit 7 produced shell_exit_code=7 in the actual close event; this is not a per-command exit code. |
+| Authentication and reconnect | A wrong password returned awaiting_auth / Wrong Password. Authenticating with a wrong password returned AUTH_FAILED; the current challenge's correct password authenticated and opened the terminal. Explicit disconnect returned disconnected / Human; old terminals became closed, with unknown exit codes null. Reconnect did not reuse the temporary password and returned new authentication challenges and control references. |
+| Stop and departure | Stopping MCP closed its listener, cleared agents and removed banners; the original GUI terminal still accepted manual echo afterstop. DELETE ended the logical MCP session, revoked bindings and retained the GUI. Clients with no GET event stream and no ping responses received HTTP 404 after lease expiry; the session could be rebound and stayed Human. Persisting enablement, exiting and restarting restored running automatically. |
 
-联调发现并修复：官方桌面端在认证前只报告权限拒绝，需要在成功 PeerInfo 后应用协议允许默认值并保留显式拒绝；子窗口可见性应使用 desktop_multi_window；拖动延时与排队等待需要被控制权变化唤醒；终端认证弹窗应限制在内容区，不能覆盖可靠的接管入口。这些修复均已使用新版进行上述实机复测。另修复长期有效的当前引用在关闭时立即被淘汰的问题：旧引用保留期从被替换时开始计算，自动化测试覆盖长期引用的退休计时及关闭记录；新创建终端连接关闭后，实机读取确认 Closed、GUI registered=false。
+Integration found and fixed the following: official desktop peers report only denied permissions before authentication, so successful PeerInfo must apply protocol defaults while retaining explicit denials; child-window visibility must use desktop_multi_window; drag delays and queued waits must wake on control changes; terminal authentication dialogs must stay within the content area so the takeover entry remains usable. The live checks above were repeated on the updated build. Another fix prevents immediate eviction of a long-lived current reference on closure: retention starts when it is replaced. Automated tests cover retiring long-lived references and closed records; live reads after closing a newly created terminal connection confirmed Closed and GUI registered=false.
 
-### MCP 集成的既有路径回归范围
+### Existing-path regression surface of MCP integration
 
-本轮检查以最终 diff 为准；新增远控逻辑留在 src/automation，MCP 传输和工具适配留在 src/mcp。既有文件的必要变化如下。
+This review uses the final diff. New remote-control logic stays in src/automation; MCP transport and tool adaptation stay in src/mcp. Required changes to existing files follow.
 
-| 文件 | 变化及必要性 |
+| File | Change and necessity |
 | --- | --- |
-| Cargo.toml / Cargo.lock、src/lib.rs | 增加默认关闭、仅 macOS 使用的 mcp 依赖与模块；SDK 引入共享 async-trait / serde_json 解析版本变化，需同时验证 feature off 编译。子模块 gitlink 不变。 |
-| src/flutter.rs | 复用原 Flutter 异步运行器，MCP 构建使用多线程 Tokio 并防止重复启动；主 GUI 注册事件后才恢复持久化 MCP 启用状态。关闭 feature 保留原运行器。 |
-| src/client.rs | 新增 cfg 限定的内部消息与临时认证标记；最终登录发送检查控制权，AI 密码不进入官方保存或重连路径。人工认证沿原函数执行。 |
-| src/client/io_loop.rs | 在实际发送位置执行输入门控、释放与认证钩子；观察实际权限、认证、终端事件。终端字节复制供桥接缓存，GUI 仍接收原有响应。 |
-| src/ui_session_interface.rs | 人工输入进入队列时携带控制代次，重连清理 AI 临时凭据；防止排队旧输入在接管后继续执行。 |
-| src/flutter_ffi.rs | 只新增 MCP 设置、控制权、可见会话与终端挂载接口，以及终端打开的薄钩子；原操作函数签名不变。 |
-| src/automation/sessions.rs / mod.rs | 扩充已有桥接观察层的认证挑战、权限、终端及关闭记录；回收失去 GUI 核心的状态，避免过期引用存活。 |
-| flutter/lib/main.dart、utils/multi_window_manager.dart、models/model.dart | 将内部打开 / 关闭请求送到真实 GUI 窗口，传递不含密码的保留请求 ID；普通会话创建继续走原入口。 |
-| flutter/lib/desktop/pages/remote_page.dart / remote_tab_page.dart | 添加会话提示条、只读区域和匹配会话的关闭分支，原画面与工具栏实现保留。 |
-| flutter/lib/desktop/pages/terminal_page.dart / terminal_tab_page.dart / terminal_connection_manager.dart | 传递创建请求、确认标签已挂载、显示控制条；MCP 构建的认证弹窗限制在内容区，保证接管按钮可点击。关闭工具只移除对应核心的视图，人工标签关闭流程不改写。 |
-| flutter/lib/desktop/pages/desktop_setting_page.dart | 支持 MCP 的构建才新增设置 Tab，设置组件独立。 |
-| src/lang/*.rs | 仅追加新界面键；中文提供翻译，其他语言保留空值回退，意大利语条目不改译。 |
-| scripts/build-macos-arm64.sh | 显式 MCP 构建选择对应工具链与符号剥离修正；默认仍为 Rust 1.81.0 官方 GUI。 |
+| Cargo.toml / Cargo.lock, src/lib.rs | Add default-off, macOS-only mcp dependencies/modules. SDK resolution changes shared async-trait / serde_json versions, requiring feature-off compilation checks too. Submodule gitlinks remain unchanged. |
+| src/flutter.rs | Reuse the Flutter async runner, using multithreaded Tokio in MCP builds and preventing duplicate startup. Restore persisted MCP enablement only after main-GUI event registration. Feature-off builds retain the original runner. |
+| src/client.rs | Add cfg-gated internal messages and temporary-authentication markers. Final login send checks control; AI passwords stay out of stock persistence/reconnect paths. Human authentication uses the original function. |
+| src/client/io_loop.rs | Apply input gating, release and authentication hooks at the actual send point; observe actual permissions/authentication/terminal events. Copy terminal bytes for the bridge while the GUI receives the original responses. |
+| src/ui_session_interface.rs | Carry control epochs when manual input enters the queue; clear temporary AI credentials on reconnect so old queued input cannot execute after takeover. |
+| src/flutter_ffi.rs | Add only MCP settings/control, visible-session and terminal-mount interfaces plus a thin terminal-open hook. Existing operation signatures are unchanged. |
+| src/automation/sessions.rs / mod.rs | Extend the observation layer with authentication challenges, permissions, terminals and closed records. Reclaim state whose GUI core is gone, preventing stale references from remaining live. |
+| flutter/lib/main.dart, utils/multi_window_manager.dart, models/model.dart | Route internal open/close requests to actual GUI windows using reserved request IDs without passwords. Ordinary session creation retains its entry point. |
+| flutter/lib/desktop/pages/remote_page.dart / remote_tab_page.dart | Add session banners, read-only areas and a session-matched close branch, preserving existing image/toolbar implementations. |
+| flutter/lib/desktop/pages/terminal_page.dart / terminal_tab_page.dart / terminal_connection_manager.dart | Forward creation requests, confirm mounted tabs and display the control bar. MCP-build authentication dialogs stay within content so takeover remains clickable. Close tools remove only the matching core's views without rewriting manual tab closure. |
+| flutter/lib/desktop/pages/desktop_setting_page.dart | Add a settings tab only in MCP-capable builds; its component is separate. |
+| src/lang/*.rs | Append only new UI keys; Chinese is translated, other languages retain empty fallback values, and Italian entries are not translated. |
+| scripts/build-macos-arm64.sh | Explicit MCP builds select their toolchain and stripping workaround; default remains the official Rust 1.81.0 GUI. |
 
-真实双屏的屏幕切换、不同原点与缩放组合、显示器热插拔尚未实机验收。当前发布目标仅为本机 macOS ARM64 开发产物；没有验证其他主控平台或正式签名、公证分发。
+Live dual-display switching, mixed origins/scaling and display hotplug have not yet been accepted at this stage. The current release target is a local macOS ARM64 development artifact; other controller platforms and formal signing/notarized distribution have not been validated.
