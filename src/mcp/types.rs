@@ -49,8 +49,20 @@ pub enum Credentials {
 params!(Reconnect { session_ref: String, operation_id: Option<String>, force_relay: Option<bool>, wait_ms: Option<u64> });
 params!(ControlRequest { session_ref: String, operation_id: Option<String>, reason: Option<String>, wait_ms: Option<u64> });
 params!(ControlCancel { session_ref: String, operation_id: Option<String>, approval_id: String });
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSource { Decoded, RemoteOriginal }
+params!(Refresh { session_ref: String, operation_id: Option<String>, display_id: Option<String> });
 params!(Capture {
     session_ref: String,
+    operation_id: Option<String>,
+    /// decoded (default) reads cached video; remote_original requests the stock toolbar PNG.
+    /// Original requires AI control, peer >=1.4.0, wait_ms 1..30000 (default 10000),
+    /// and omits after_frame_seq/max_width/max_height. It has no input snapshot_id.
+    source: Option<CaptureSource>,
+    /// Optional absolute local .png path. Saves exactly the returned PNG, never overwrites.
+    /// Requires AI control. Parent directory must exist; use operation_id when retrying.
+    save_path: Option<String>,
     display_id: Option<String>,
     /// Only return frames newer than this sequence; requires an actual display_id.
     after_frame_seq: Option<String>,

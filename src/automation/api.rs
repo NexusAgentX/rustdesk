@@ -86,6 +86,7 @@ pub fn view(session: &SessionHandle, full: bool) -> Value {
     if s.state == ConnectionState::AwaitingHuman {
         result["human_action"] = json!({"kind":"remote_confirmation","message":s.last_error});
     }
+    result["connection"] = json!({"state":state_name(s.state),"epoch":s.connection_epoch.to_string(),"authenticated":s.authenticated,"error":s.last_error});
     if full {
         result["control"]["release_error"] = json!(control.release_error);
         result["control"]["released_inputs"] = json!(control.released_inputs);
@@ -93,7 +94,6 @@ pub fn view(session: &SessionHandle, full: bool) -> Value {
         result["owner"] = json!("self");
         result["ui_session_ids"] = json!(s.ui_session_ids);
         result["gui"] = json!({"registered":!s.ui_session_ids.is_empty(),"visibility":super::gui::visibility(session)});
-        result["connection"] = json!({"state":state_name(s.state),"epoch":s.connection_epoch.to_string(),"authenticated":s.authenticated,"error":s.last_error});
         result["capabilities"] = json!({"keyboard":{"supported":s.kind==SessionKind::Desktop,"allowed":s.permissions.get("keyboard")},"terminal":{"supported":s.terminal_supported,"allowed":if s.kind==SessionKind::Terminal&&s.authenticated{Some(true)}else{None}}});
         result["layout_revision"] = json!(s.layout_revision.to_string());
         result["displays"]=json!(s.displays.iter().map(|d|json!({"id":d.id.to_string(),"name":d.name,"x":d.x,"y":d.y,"width":d.width,"height":d.height,"scale":d.scale,"online":d.online,"primary":primary.map(|p|p==d.id)})).collect::<Vec<_>>());

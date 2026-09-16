@@ -67,7 +67,7 @@ pub fn definitions() -> Vec<Tool> {
     definition::<Read>("rd_displays_get","Read remote display topology, original dimensions, known modes, AI capture selection, local view selection and stock virtual-display support. Display IDs are valid only for the reported layout_revision; driver_installed is unknown because the stock protocol does not report it.",true),
     definition::<DisplayModes>("rd_display_modes_get","Read cached supported modes for one online display without changing it. If known=false, switch from another display to this display with target=local_view; the stock peer reports modes only when the selected display changes. Reconnect if no other display exists. Current geometry is in capture pixels; modes are the stock OS resolution values and scale is reported separately.",true),
     definition::<ViewGet>("rd_connection_settings_get","Read quality/FPS preferences, available codecs, true color, audio and quality overlay settings, observed per-field metrics with age, and connection diagnostics from a desktop view. Unknown and stale metrics remain explicit; settings are not proof of actual codec/FPS. Multiple views require ui_session_id. No remote permission is granted by this query.",true),
-    definition::<ConnectionSet>("rd_connection_settings_set","Set quality (best/balanced/low/custom), codec preference, true_color, audio_muted or quality_overlay. Custom requires quality 10..2000; optional fps 5..120 is accepted only when the stock toolbar allows it. Public relay and old-peer limits apply. Codecs must be reported available; 4:4:4 requires fresh VP9/AV1 observation and peer >=1.2.4. Audio permission is required for mute changes. Preferences persist per peer; overlay also updates the target view. Reply confirms local setting application, not remote codec/quality/audio outcome. Query observed metrics separately; requires AI control.",false),
+    definition::<ConnectionSet>("rd_connection_settings_set","Set quality (best/balanced/low/custom), codec preference, true_color, audio_muted, quality_overlay or lock_after_end. Custom requires quality 10..2000; optional fps 5..120 is accepted only when the stock toolbar allows it. Public relay and old-peer limits apply. Codecs must be reported available; 4:4:4 requires fresh VP9/AV1 observation and peer >=1.2.4. Audio permission is required for mute changes. lock_after_end requires keyboard permission and view-only off, persists per peer and asks the peer to lock on session end. Preferences persist per peer; overlay also updates the target view. Reply confirms local setting application, not remote codec/quality/audio outcome. Query observed metrics separately; requires AI control.",false),
     definition::<ViewGet>("rd_view_settings_get","Read actual settings and local-window state from one desktop GUI view, including local screens, scaling, cursor preferences, toolbar pin and fullscreen. Multiple views require ui_session_id from displays_get. Does not change remote resolution or MCP image size.",true),
     definition::<ViewSet>("rd_view_settings_set","Set one explicit local-view setting under AI control. Scaling/cursor/display-window preferences persist per peer; use_all_local_displays applies on the next fresh connection; individual_windows changes subsequent toolbar selections without creating/closing windows. follow_ai_display and toolbar pin persist globally; fullscreen affects the whole local OS window, including other tabs. Custom scale percent 5..1000. Read back settings and effective/support fields.",false),
     definition::<ViewWindow>("rd_view_window","Show the target local OS window, close only its desktop view, or open_display using the stock monitor-window path (may reuse an existing tab/window). Closing the last view disconnects the logical session; session_close instead closes every view. Show/fullscreen affect the OS window shared by tabs. Window open/close returns sent with unknown completion; use displays_get to observe topology. Requires AI control.",false),
@@ -106,7 +106,10 @@ pub fn definitions() -> Vec<Tool> {
     definition::<ControlRequest>("rd_control_request","Explicitly request AI control. Human approval is required by default. Repeated pending requests do not extend the deadline.",false),
     definition::<ControlCancel>("rd_control_cancel","Cancel one pending approval request. Returns an already-final result without undoing a completed control grant.",false),
     definition::<Write>("rd_control_release","Voluntarily return control to the human, invalidate queued AI input and release held keys and buttons. Keep the binding for reading.",false),
-    definition::<Capture>("rd_screen_capture","Read remote decoded pixels as a native PNG image block, including geometry and snapshot_id for input. Available under human control. Specify actual display_id with after_frame_seq. wait_ms is a maximum wait for a qualifying frame, not a fixed delay; cached frames may return immediately.",true),
+    definition::<Capture>("rd_screen_capture","Return a native PNG. source=decoded (default) reads decoded pixels with snapshot_id for input and supports max_width/max_height/after_frame_seq; available under human control. source=remote_original requests the stock toolbar original PNG from peer >=1.4.0, requires AI control, omits resizing/frame cursor and returns no input snapshot_id. wait_ms is a maximum wait, default 0 decoded or 10000 original; original timeout does not undo sending. Optional save_path writes exactly the returned PNG to a new absolute local .png file under AI control; parent must exist and existing targets are never overwritten. Use operation_id for save/request retries. PNG limit 8 MiB.",false),
+    definition::<Refresh>("rd_screen_refresh","Send stock video refresh for display_id (default primary). Requires ready desktop and AI control. Old peers refresh all displays. Delivery is not proof of a new frame; observe with screen_capture after_frame_seq.",false),
+    definition::<Write>("rd_session_lock","Send the stock remote lock-screen key. Requires keyboard permission, ready desktop, AI control and view-only off. Returns sent with confirmed=false; inspect the screen to verify and use normal OS authentication to unlock.",false),
+    definition::<Write>("rd_session_restart","Send the stock restart request to Windows/Linux/macOS under AI control and restart permission. This may terminate applications and disconnect. The protocol has no reboot-success acknowledgement: confirmed=false, and disconnection alone proves nothing. Use session_get/reconnect for recovery; portable peers may need local reopening. Use operation_id to prevent duplicate sending.",false),
     definition::<Input>("rd_input_send","Send 1..32 ordered input actions under AI control. Coordinate actions require a recent snapshot_id. Keys use exact names such as KeyL, Digit1, Enter and ArrowLeft. Example Ctrl+L: {\"type\":\"shortcut\",\"modifiers\":[\"Control\"],\"key\":\"KeyL\"}. Use text actions for literal text. Insert {\"type\":\"wait\",\"duration_ms\":500} before subsequent actions when the application needs time; total batch delays must be <=30000 ms. Use operation_id for safe retries. Optional capture.delay_ms delays observation after sending (default 0, max 30000 ms); capture.wait_ms then waits at most for a frame newer than the pre-input frame (default 1000, max 30000 ms), returning immediately if available. Neither guarantees remote application completion. Observation failures never replay input.",false),
     definition::<Read>("rd_terminal_list","List terminal instances in this terminal connection without creating one.",true),
     definition::<TerminalCreate>("rd_terminal_create","Create a visible GUI terminal tab before requesting a remote interactive shell. Requires a terminal connection and AI control.",false),
@@ -696,10 +699,27 @@ pub(super) async fn dispatch(
                 json!({"approval":session.control().cancel_approval(&permit,&p.approval_id)?}),
             ))
         }
+        "rd_screen_refresh" | "rd_session_lock" | "rd_session_restart" => {
+            let (reference, display) = if name == "rd_screen_refresh" {
+                let p:Refresh = parse(args)?; (p.session_ref,p.display_id)
+            } else {let p:Write=parse(args)?;(p.session_ref,None)};
+            let (_,permit)=api::resolve(agent,&reference,true)?;
+            let value=match name {
+                "rd_screen_refresh" => crate::automation::desktop::refresh(permit,display.as_deref().unwrap_or("primary")).await?,
+                "rd_session_lock" => crate::automation::desktop::lock(permit).await?,
+                _ => crate::automation::desktop::restart(permit).await?,
+            };
+            Ok(Reply::success(value))
+        }
         "rd_screen_capture" => {
             let p: Capture = parse(args)?;
-            let (_, permit) = api::resolve(agent, &p.session_ref, false)?;
-            let ms = wait(p.wait_ms, 0)?;
+            let original = matches!(p.source,Some(CaptureSource::RemoteOriginal));
+            let (_, permit) = api::resolve(agent, &p.session_ref, original || p.save_path.is_some())?;
+            if let Some(path)=&p.save_path { crate::automation::desktop::validate_path(path)?; }
+            if original && (p.after_frame_seq.is_some() || p.max_width.is_some() || p.max_height.is_some()) {
+                return Err(BridgeError::invalid("Original PNG omits frame cursor and resizing parameters"));
+            }
+            let ms = wait(p.wait_ms, if original {10000}else{0})?;
             let after = p
                 .after_frame_seq
                 .map(|v| {
@@ -707,7 +727,9 @@ pub(super) async fn dispatch(
                         .map_err(|_| BridgeError::invalid("Invalid frame sequence"))
                 })
                 .transpose()?;
-            let observation = screen::capture(
+            let mut observation = if original {
+                crate::automation::desktop::original(&permit,p.display_id.as_deref().unwrap_or("primary"),ms).await?
+            } else {screen::capture(
                 &permit,
                 p.display_id.as_deref().unwrap_or("primary"),
                 after,
@@ -715,7 +737,11 @@ pub(super) async fn dispatch(
                 p.max_width.unwrap_or(1600),
                 p.max_height.unwrap_or(1600),
             )
-            .await?;
+            .await?};
+            if !original {observation.data["source"]=json!("decoded");}
+            if let (Some(path),Some(png))=(p.save_path,observation.png.as_ref()) {
+                observation.data["saved"]=crate::automation::desktop::save(permit,path,png.clone()).await?;
+            }
             Ok(Reply {
                 value: json!({"ok":true,"status":if observation.unchanged{"unchanged"}else{"completed"},"data":observation.data}),
                 png: observation.png,
@@ -1104,6 +1130,8 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
         "rd_control_request" => shape!(ControlRequest),
         "rd_control_cancel" => shape!(ControlCancel),
         "rd_screen_capture" => shape!(Capture),
+        "rd_screen_refresh" => shape!(Refresh),
+        "rd_session_lock" | "rd_session_restart" => shape!(Write),
         "rd_input_send" => shape!(Input),
         "rd_terminal_list" => shape!(Read),
         "rd_terminal_create" => shape!(TerminalCreate),
@@ -1134,7 +1162,7 @@ pub(super) fn preflight(client: &Client, name: &str, args: &Map<String, Value>) 
                 | "rd_terminal_read"
                 | "rd_control_cancel"
                 | "rd_session_detach"
-        );
+        ) && !(name == "rd_screen_capture" && (args.get("save_path").is_some_and(|v| !v.is_null()) || args.get("source").and_then(Value::as_str)==Some("remote_original")));
         let (_, permit) = api::resolve(&client.agent, reference, !read)?;
         if !read && !matches!(name, "rd_control_request" | "rd_control_release") {
             permit.check()?;
@@ -1202,10 +1230,15 @@ fn output_schema(name: &str) -> Map<String, Value> {
             ("control", "object"),
             ("released_inputs", "object|null"),
         ],
+        "rd_screen_refresh" | "rd_session_lock" | "rd_session_restart" => &[("delivery","string"),("confirmed","boolean"),("scope","string"),("display_id","string"),("effective_target","string"),("verification","string"),("connection_epoch","string"),("recovery","string")],
         "rd_screen_capture" => &[
+            ("source", "string"),
+            ("image_status", "string"),
+            ("saved", "object"),
+            ("remote_capture", "object"),
             ("session_ref", "string"),
             ("frame", "object"),
-            ("image_content_index", "integer"),
+            ("image_content_index", "integer|null"),
         ],
         "rd_input_send" => &[
             ("session_ref", "string"),

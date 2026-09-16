@@ -187,6 +187,7 @@ class AutomationView {
         'codec_preference': await bind.sessionGetOption(sessionId: ffi.sessionId, arg: kOptionCodecPreference),
         'true_color': toggle('i444'),
         'audio_muted': toggle('disable-audio'),
+        'lock_after_end': toggle('lock-after-session-end'),
         'quality_overlay': toggle('show-quality-monitor'),
         'quality_overlay_visible': monitor.show,
       },
@@ -201,6 +202,7 @@ class AutomationView {
         'true_color': trueColorSupported,
         'true_color_reason': trueColorSupported ? null : 'requires_peer_1_2_4_and_observed_vp9_or_av1',
         'audio_permission': pi.version.isEmpty ? null : model.permissions['audio'] != false,
+        'lock_after_end': model.keyboard && !model.viewOnly && !model.isPeerAndroid,
       },
       'metrics': {
         'speed': metric('speed', monitor.data.speed, 'stock_formatted_rate'),
@@ -268,6 +270,12 @@ class AutomationView {
           throw _ViewError('PERMISSION_DENIED', 'Remote audio permission is not granted');
         }
         await setToggle(request, 'disable-audio', enabled);
+        return 'peer_preference';
+      case 'lock_after_end':
+        if (support['lock_after_end'] != true) {
+          throw _ViewError('PERMISSION_DENIED', 'Lock after session end requires keyboard permission, non-Android peer and view-only off');
+        }
+        await setToggle(request, 'lock-after-session-end', enabled);
         return 'peer_preference';
       case 'quality_overlay':
         await setToggle(request, 'show-quality-monitor', enabled);

@@ -37,6 +37,7 @@ pub(super) struct Operations {
     records: Mutex<HashMap<String, Arc<Record>>>,
 }
 struct Observation {
+    flat_image: bool,
     at: Instant,
     kind: String,
     value: Value,
@@ -83,14 +84,13 @@ fn cache_key(client: &Client, id: &str) -> String {
     format!("{}:{id}", client.agent.id)
 }
 fn save_observation(client: &Client, key: &str, reply: &mut Reply) {
-    let Some(value) = reply
+    let observed = reply
         .value
         .get_mut("data")
         .and_then(|d| d.as_object_mut())
-        .and_then(|d| d.remove("observation"))
-    else {
-        return;
-    };
+        .and_then(|d| d.remove("observation"));
+    let flat_image = observed.is_none() && reply.png.is_some();
+    let Some(value) = observed.or_else(|| flat_image.then(|| json!({"kind":"screen"}))) else {return;};
     let kind = value["kind"].as_str().unwrap_or("terminal").to_owned();
     let bytes = if kind == "screen" {
         reply.png.as_ref().map_or(0, Vec::len)
@@ -100,7 +100,10 @@ fn save_observation(client: &Client, key: &str, reply: &mut Reply) {
     let mut cache = observations().lock().unwrap();
     if !client.agent.is_alive() {
         reply.png = None;
-        reply.value["data"]["observation"] = json!({"kind":kind,"status":"expired"});
+        if flat_image {
+            reply.value["data"]["image_status"] = json!("expired");
+            reply.value["data"]["image_content_index"] = Value::Null;
+        } else {reply.value["data"]["observation"] = json!({"kind":kind,"status":"expired"});}
         return;
     }
     cache.retain(|_, v| v.at.elapsed() < Duration::from_secs(30));
@@ -131,6 +134,7 @@ fn save_observation(client: &Client, key: &str, reply: &mut Reply) {
     cache.insert(
         key.into(),
         Observation {
+            flat_image,
             at: Instant::now(),
             kind: kind.clone(),
             value,
@@ -138,7 +142,10 @@ fn save_observation(client: &Client, key: &str, reply: &mut Reply) {
             bytes,
         },
     );
-    reply.value["data"]["observation"] = json!({"kind":kind,"status":"expired"});
+    if flat_image {
+        reply.value["data"]["image_status"] = json!("expired");
+        reply.value["data"]["image_content_index"] = Value::Null;
+    } else {reply.value["data"]["observation"] = json!({"kind":kind,"status":"expired"});}
 }
 fn restore_observation(key: &str, reply: &mut Reply) {
     let cache = observations().lock().unwrap();
@@ -146,7 +153,10 @@ fn restore_observation(key: &str, reply: &mut Reply) {
         .get(key)
         .filter(|v| v.at.elapsed() < Duration::from_secs(30))
     {
-        reply.value["data"]["observation"] = value.value.clone();
+        if value.flat_image {
+            reply.value["data"]["image_status"] = json!("available");
+            reply.value["data"]["image_content_index"] = json!(1);
+        } else {reply.value["data"]["observation"] = value.value.clone();}
         reply.png = value.png.clone();
     }
 }
@@ -366,6 +376,18 @@ mod tests {
     use super::*;
     use crate::{automation::sessions, flutter::FlutterHandler, ui_session_interface::Session};
     use uuid::Uuid;
+
+    #[test]
+    fn saved_capture_replays_metadata_after_image_expiry_without_rewriting() {
+        let client=Client::new();let key=format!("image-{}",Uuid::new_v4());
+        let mut reply=Reply::success(json!({"saved":{"path":"/tmp/shot.png"},"image_content_index":1}));reply.png=Some(vec![1,2,3]);
+        save_observation(&client,&key,&mut reply);
+        assert!(reply.png.is_none());assert!(reply.value["data"]["image_content_index"].is_null());
+        let mut fresh=reply.clone();restore_observation(&key,&mut fresh);assert_eq!(fresh.png,Some(vec![1,2,3]));
+        observations().lock().unwrap().remove(&key);
+        restore_observation(&key,&mut reply);assert!(reply.png.is_none());assert_eq!(reply.value["data"]["saved"]["path"],"/tmp/shot.png");
+        assert_eq!(reply.value["data"]["image_status"],"expired");
+    }
 
     #[test]
     fn local_execution_does_not_claim_remote_completion() {

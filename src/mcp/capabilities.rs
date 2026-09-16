@@ -75,6 +75,10 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             "display_select":cap(Some(desktop && s.peer_version.as_deref().is_some_and(crate::common::is_support_multi_ui_session)),Some(true),true,true,&["rd_display_select"]),
             "display_resolution":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_display_resolution_set"]),
             "virtual_display":cap(Some(desktop && crate::automation::displays::virtual_info(&s)["supported"] == true),s.permissions.get("keyboard").copied(),true,true,&["rd_virtual_display_set"]),
+            "screen_refresh":cap(Some(desktop),Some(true),true,true,&["rd_screen_refresh"]),
+            "original_screenshot":cap(Some(desktop && s.peer_version.as_deref().is_some_and(|v| crate::common::is_support_screenshot_num(hbb_common::get_version_number(v)))),Some(true),true,true,&["rd_screen_capture"]),
+            "session_lock":cap(Some(desktop),s.permissions.get("keyboard").copied(),true,true,&["rd_session_lock"]),
+            "session_restart":cap(Some(desktop && matches!(s.platform.as_deref(),Some("Windows" | "Linux" | "Mac OS"))),s.permissions.get("restart").copied(),true,true,&["rd_session_restart"]),
             "screen_capture":cap(Some(desktop),Some(true),false,true,&["rd_screen_capture"]),
             "file_read":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),false,true,&["rd_file_list","rd_file_jobs","rd_file_job_get"]),
             "file_write":cap(Some(s.kind == SessionKind::FileTransfer),s.permissions.get("file").copied(),true,true,&["rd_file_manage","rd_file_transfer","rd_file_job_cancel","rd_file_conflict_resolve"]),
@@ -124,7 +128,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
                 if let Some(blockers) = result["capabilities"]["file_clipboard"]["blockers"].as_array_mut() { blockers.push(json!("file_clipboard_disabled")); }
             }
             if lc.view_only.v {
-                for key in ["keyboard_mouse", "clipboard_settings_write", "file_clipboard_settings_write", "display_resolution", "virtual_display"] {
+                for key in ["keyboard_mouse", "clipboard_settings_write", "file_clipboard_settings_write", "display_resolution", "virtual_display", "session_lock"] {
                     result["capabilities"][key]["available"] = json!(false);
                     if let Some(blockers) = result["capabilities"][key]["blockers"].as_array_mut() {
                         blockers.push(json!("view_only"));
@@ -133,7 +137,7 @@ pub(super) fn view(session: &SessionHandle) -> Value {
             }
         }
     }
-    for key in ["display_resolution", "virtual_display"] { result["capabilities"][key]["scope"] = json!("remote_machine"); }
+    for key in ["display_resolution", "virtual_display", "session_lock", "session_restart"] { result["capabilities"][key]["scope"] = json!("remote_machine"); }
     for key in ["clipboard_settings_read", "clipboard_settings_write", "file_clipboard_settings_read", "file_clipboard_settings_write"] {
         result["capabilities"][key]["scope"] = json!("peer_preference");
     }

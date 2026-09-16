@@ -343,6 +343,12 @@ impl Connection {
         self.session.notify(&mut state);
     }
 
+    pub(crate) fn connection_error(&self, error: &str) {
+        self.update(|state| {
+            state.snapshot.last_error = Some(error.chars().take(1024).collect());
+        });
+    }
+
     pub(crate) fn login_error(&self, error: &str) {
         self.update(|state| {
             state.snapshot.authenticated = false;
@@ -402,7 +408,7 @@ impl Connection {
                     .permissions
                     .entry("keyboard".into())
                     .or_insert(true);
-                for permission in ["clipboard", "file"] {
+                for permission in ["clipboard", "file", "restart"] {
                     state.snapshot.permissions.entry(permission.into()).or_insert(true);
                 }
             }
@@ -882,6 +888,7 @@ mod tests {
         assert!(session.snapshot().permissions.get("keyboard").is_none());
         connection.authenticated(&peer);
         assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&true));
+        assert_eq!(session.snapshot().permissions.get("restart"), Some(&true));
         assert_eq!(session.snapshot().peer_version.as_deref(), Some("1.4.9"));
         let next = session.begin(1).unwrap();
         assert!(session.snapshot().peer_version.is_none());
@@ -890,8 +897,14 @@ mod tests {
             enabled: false,
             ..Default::default()
         });
+        next.permission(&PermissionInfo {
+            permission: hbb_common::message_proto::permission_info::Permission::Restart.into(),
+            enabled: false,
+            ..Default::default()
+        });
         next.authenticated(&peer);
         assert_eq!(session.snapshot().permissions.get("keyboard"), Some(&false));
+        assert_eq!(session.snapshot().permissions.get("restart"), Some(&false));
     }
 
     #[test]
@@ -946,6 +959,45 @@ mod tests {
         session.begin(1).unwrap();
         assert!(session.snapshot().resolutions.is_empty());
         assert!(session.snapshot().platform_additions.is_null());
+    }
+
+    #[test]
+    fn connection_errors_survive_disconnect_and_reconnect_rejects_stale_errors() {
+        let (session, peer, _) = fixture();
+        for (epoch, error) in ["Remote desktop is offline", "Timeout", "Reset by the peer", "Connection rejected"]
+            .iter().enumerate()
+        {
+            let connection = session.begin(epoch as u64).unwrap();
+            assert!(session.snapshot().last_error.is_none());
+            connection.connection_error(error);
+            connection.disconnected();
+            let snapshot = session.snapshot();
+            assert_eq!(snapshot.state, ConnectionState::Disconnected);
+            assert_eq!(snapshot.last_error.as_deref(), Some(*error));
+            let summary = super::super::api::view(&session, false);
+            assert_eq!(summary["connection"]["error"], *error);
+            assert_eq!(summary["connection"]["state"], "disconnected");
+            connection.connection_error("late error after disconnect");
+            assert_eq!(session.snapshot().last_error.as_deref(), Some(*error));
+        }
+        let old = session.begin(4).unwrap();
+        old.connection_error("old attempt failed");
+        let current = session.begin(5).unwrap();
+        old.connection_error("late error from old attempt");
+        old.disconnected();
+        assert!(session.snapshot().last_error.is_none());
+        assert_eq!(session.snapshot().state, ConnectionState::Connecting);
+        current.authenticated(&peer);
+        current.disconnected();
+        assert!(session.snapshot().last_error.is_none());
+    }
+
+    #[test]
+    fn connection_error_text_is_bounded_by_characters() {
+        let (session, _, _) = fixture();
+        let connection = session.begin(0).unwrap();
+        connection.connection_error(&"错".repeat(1100));
+        assert_eq!(session.snapshot().last_error.unwrap(), "错".repeat(1024));
     }
 
     #[test]

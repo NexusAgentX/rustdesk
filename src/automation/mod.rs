@@ -23,3 +23,5 @@ pub mod file_clipboard;
 pub mod displays;
 
 pub mod views;
+
+pub mod desktop;

@@ -257,6 +257,7 @@ impl<T: InvokeUiSession> Remote<T> {
                             if let Some(res) = res {
                                 match res {
                                     Err(err) => {
+                                        self.observe_connection_error(&err.to_string());
                                         self.handler.on_establish_connection_error(err.to_string());
                                         break;
                                     }
@@ -273,6 +274,7 @@ impl<T: InvokeUiSession> Remote<T> {
                                     }
                                 }
                             } else {
+                                self.observe_connection_error("Reset by the peer");
                                 if self.handler.is_restarting_remote_device() {
                                     log::info!("Restart remote device");
                                     self.handler.msgbox("restarting", "Restarting remote device", "Connection in progress. Please wait.", "");
@@ -296,11 +298,13 @@ impl<T: InvokeUiSession> Remote<T> {
                         }
                         _ = self.timer.tick() => {
                             if last_recv_time.elapsed() >= SEC30 {
+                                self.observe_connection_error("Timeout");
                                 self.handler.msgbox("error", "Connection Error", "Timeout", "");
                                 break;
                             }
                             if !self.read_jobs.is_empty() {
                                 if let Err(err) = fs::handle_read_jobs(&mut self.read_jobs, &mut peer).await {
+                                    self.observe_connection_error(&err.to_string());
                                     self.handler.msgbox("error", "Connection Error", &err.to_string(), "");
                                     break;
                                 }
@@ -369,10 +373,18 @@ impl<T: InvokeUiSession> Remote<T> {
                 }
             }
             Err(err) => {
+                self.observe_connection_error(&err.to_string());
                 self.handler.on_establish_connection_error(err.to_string());
             }
         }
         self.handle_disconnected(round);
+    }
+
+    fn observe_connection_error(&self, _error: &str) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if let Some(observer) = &self.automation {
+            observer.connection_error(_error);
+        }
     }
 
     fn handle_disconnected(&self, round: u32) {
@@ -1975,6 +1987,7 @@ impl<T: InvokeUiSession> Remote<T> {
                     }
                     Some(misc::Union::CloseReason(c)) => {
                         self.sent_close_reason = true; // The controlled end will close, no need to send close reason
+                        self.observe_connection_error(&c);
                         self.handler.msgbox("error", "Connection Error", &c, "");
                         return false;
                     }
@@ -2170,6 +2183,9 @@ impl<T: InvokeUiSession> Remote<T> {
                     _ => {}
                 },
                 Some(message::Union::MessageBox(msgbox)) => {
+                    if msgbox.title == "Connection Error" {
+                        self.observe_connection_error(&msgbox.text);
+                    }
                     let mut link = msgbox.link;
                     if let Some(v) = config::HELPER_URL.get(&link as &str) {
                         link = v.to_string();
@@ -2220,6 +2236,11 @@ impl<T: InvokeUiSession> Remote<T> {
                     self.handler.set_platform_additions(&pi.platform_additions);
                 }
                 Some(message::Union::ScreenshotResponse(response)) => {
+                    #[cfg(all(feature = "automation", target_os = "macos"))]
+                    if crate::automation::desktop::observe(
+                        &crate::automation::sessions::for_core(&self.handler).map(|s| s.snapshot().session_id).unwrap_or_default(),
+                        &response,
+                    ) { return true; }
                     crate::client::screenshot::set_screenshot(response.data);
                     self.handler
                         .handle_screenshot_resp(response.sid, response.msg);

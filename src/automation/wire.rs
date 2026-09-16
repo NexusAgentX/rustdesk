@@ -125,6 +125,10 @@ impl WireState {
         self.track(message);
     }
     fn track(&mut self, message: &Message) {
+        // These protocol commands execute even on key-up; never synthesize a release.
+        if let Some(message::Union::KeyEvent(key)) = &message.union {
+            if matches!(&key.union, Some(key_event::Union::ControlKey(k)) if matches!(k.enum_value(), Ok(hbb_common::message_proto::ControlKey::LockScreen | hbb_common::message_proto::ControlKey::CtrlAltDel))) { return; }
+        }
         match &message.union {
             Some(message::Union::KeyEvent(key))
                 if !matches!(key.union, Some(key_event::Union::Seq(_))) =>
@@ -219,6 +223,9 @@ impl WireState {
                 }
                 if matches!(envelope.message.union, Some(message::Union::Cliprdr(_))) { super::file_clipboard::check(&envelope.permit, true)?; }
                 if let Some(message::Union::Misc(misc)) = &envelope.message.union {
+                    if matches!(misc.union, Some(hbb_common::message_proto::misc::Union::RestartRemoteDevice(_))) {
+                        super::desktop::restart_check(&envelope.permit)?;
+                    }
                     if matches!(misc.union, Some(hbb_common::message_proto::misc::Union::ChangeDisplayResolution(_) | hbb_common::message_proto::misc::Union::ChangeResolution(_) | hbb_common::message_proto::misc::Union::ToggleVirtualDisplay(_))) {
                         super::displays::remote_write_check(&envelope.permit)?;
                     }
@@ -383,6 +390,16 @@ mod tests {
     };
     use std::time::Duration;
     use uuid::Uuid;
+
+    #[test]
+    fn one_shot_system_keys_do_not_produce_release_commands() {
+        let mut state = WireState::default();
+        for key in [crate::keyboard::client::event_lock_screen(),crate::keyboard::client::event_ctrl_alt_del()] {
+            let mut message=Message::new();message.set_key_event(key);
+            state.track(&message);
+        }
+        assert!(state.held.is_empty());
+    }
 
     #[tokio::test]
     async fn handover_releases_held_input_and_rejects_previously_queued_events() {
