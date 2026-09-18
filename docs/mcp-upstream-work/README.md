@@ -7,6 +7,8 @@
 - 目标：一个 PR 完整实现 Windows、macOS、Linux、Android、iOS 的 MCP 集成，保留参考实现全部 67 项能力。
 - 阶段：范围与资源规划已完成，Rust 1.75 MCP 依赖研究已委派子代理；产品实现尚未开始，原版主线完整构建待执行。
 - 实现基线：`5278fcab685723099e9950d56cb605807db5aa2a`，分支 `codex/mcp-upstream`。参考分支 `codex/mcp-controller` 仅用于查阅。
+- 当前开发目录：`/Users/laysath/Projects/rustdesk`，与会话默认目录一致，承载 `codex/mcp-upstream`。
+- 参考目录：`/Users/laysath/.codex/worktrees/rustdesk-mcp-upstream/rustdesk`，承载 `codex/mcp-controller`；目录名沿用创建时名称，以实际分支为准。
 - 已有验证：Rust 1.75 的 `cargo metadata --no-deps --locked` 成功，仅证明工作区清单可解析。应用完整构建、MCP 实现及运行验证尚未执行。
 - 资源：现有 Mac；用户可提供 Android 手机及 Windows 真机，包括双显示器。VM、移动 SDK 和 iOS 模拟器尚待配置，不能将可提供资源记为已接入环境。
 - 缺少 iPhone/Intel Mac 等设备的测试最后交由用户请求社区补测，不阻塞其余开发或 PR 提交。完整功能实现范围不变。

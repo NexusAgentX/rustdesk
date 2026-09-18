@@ -30,6 +30,15 @@
 - 无合适 SDK 时，评估在成熟 HTTP/JSON 库上实现 MCP 适配层的范围、成本及互操作验证方案。
 - 子代理只编写 `MCP-SDK-RESEARCH.md`，不修改产品代码、共享状态文档或提交 Git；完成后主代理审阅并汇总。当前没有结论，不代表依赖阻碍已解决。
 
+## 2026-09-18 — 交换主目录与参考工作区的分支
+
+- 用户要求当前项目目录直接开发新 PR，参考分支留在其他工作区。
+- 暂停研究子代理，确认两个仓库及子模块均无未提交改动，研究报告尚未写入仓库；保留仓库外研究实验。
+- 通过临时 detached HEAD 释放分支，依次切换：主目录 `/Users/laysath/Projects/rustdesk` 承载 `codex/mcp-upstream`，原独立目录 `/Users/laysath/.codex/worktrees/rustdesk-mcp-upstream/rustdesk` 承载 `codex/mcp-controller`。沿用既有 worktree 注册路径。
+- 分别将 hbb_common 更新到主线的 `0eb175963c950cba8d2f4f2a480f49db27b42c39` 与参考分支的 `7e1c392c62d39c364127307cd408421dd5f8cfb0`。未重置分支历史或强制覆盖文件。
+- 项目状态和仓库外旧文档的跳转改到主目录；子代理后续报告写入主目录下的 `docs/mcp-upstream-work/MCP-SDK-RESEARCH.md`，参考源码从原独立目录读取。
+- 本次只调整工作区布局及项目记录；产品实现、构建和测试状态不变。
+
 ## 后续日志格式
 
 每个工作单元注明日期/任务 ID、改动及原因、验证记录 ID、仍未解决的问题和下次入口。失败尝试保留结论及适用环境，避免重复尝试。重要状态更新随对应代码提交保存。
