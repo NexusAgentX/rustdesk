@@ -99,6 +99,14 @@
 - 明确 src/flutter.rs/src/flutter_ffi.rs 由移动代理负责，src/mcp、Cargo 和 src/lib.rs 由协议代理负责，两者直接协调服务与取消接口，不重复创建 runtime 或生命周期层。
 - 子代理阶段性回报：macOS Rust Release 编译通过、Flutter 打包仍在处理本机 Xcode 部署目标差异；协议模块隔离 Rust 1.75 check 通过、互操作测试继续；移动 SDK/runtime 下载及目标工具链配置中。上述结果尚不构成完整应用或 MCP 产品验收。
 
+## 2026-09-18 — 子任务阶段交付汇总
+
+- 用户查询进度，收到 macos_baseline_build 与 mcp_rust175_research 完成回报；A01/A02 标记完成，协议业务集成 B01 仍进行中。完成仅限各自报告的构建/模块边界，详见 V003/V004。
+- 移动三套含 MCP 原生库完整构建通过；应用打包/运行仍在推进。iOS 27 启动遇原版 Flutter UIScene 兼容问题，Android Maven 下载 TLS 中断，见 V005。暂不需要用户新增硬件资源。
+- 主会话确认 main.dart 移动薄钩子所有权，认可 async runner 仅限移动 MCP，保留桌面旧路径；要求通用 UIScene 适配先留在隔离实验，核查兼容 SDK/runtime 组合，不未经评估混入产品分支。
+- 随后移动代理回报：隔离 UIScene 适配后 iOS 已启动至中文连接首页；产品分支未引入该适配，真实 MCP 生命周期仍待测试。
+- 同步 README/VALIDATION；产品代码尚未提交与完成主会话审查。下一步是协议实现审查、业务接入与继续移动真实运行验证。
+
 ## 后续日志格式
 
 每个工作单元注明日期/任务 ID、改动及原因、验证记录 ID、仍未解决的问题和下次入口。失败尝试保留结论及适用环境，避免重复尝试。重要状态更新随对应代码提交保存。
