@@ -39,6 +39,14 @@
 - 项目状态和仓库外旧文档的跳转改到主目录；子代理后续报告写入主目录下的 `docs/mcp-upstream-work/MCP-SDK-RESEARCH.md`，参考源码从原独立目录读取。
 - 本次只调整工作区布局及项目记录；产品实现、构建和测试状态不变。
 
+## 2026-09-18 — 将参考工作区改名为 reference
+
+- 用户要求修正参考工作区仍带 upstream 的目录名。暂停子代理后，将整个 `rustdesk-mcp-upstream` 目录改名为 `rustdesk-mcp-reference`，包括仓库外旧文档跳转和测试公钥副本；主项目目录不变。
+- 参考仓库的新路径为 `/Users/laysath/.codex/worktrees/rustdesk-mcp-reference/rustdesk`，分支仍为 `codex/mcp-controller`，提交仍为 `2e8ab16a5`。
+- 修复 Git worktree 指针和子模块 core.worktree 路径，同步当前任务已有的 Codex 工作区附件路径；改名前的相关元数据已备份在仓库外。
+- 核对 Git worktree 列表、参考仓库及子模块状态，并通过 Codex 附件接口重新读取确认新路径。子模块版本及分支内容未变，没有遗留旧路径别名。
+- 更新项目入口及子代理参考路径，继续原有 SDK 研究，研究报告位置仍在主项目目录。
+
 ## 后续日志格式
 
 每个工作单元注明日期/任务 ID、改动及原因、验证记录 ID、仍未解决的问题和下次入口。失败尝试保留结论及适用环境，避免重复尝试。重要状态更新随对应代码提交保存。
