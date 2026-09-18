@@ -2,6 +2,8 @@
 
 日期：2026-09-18。研究任务 A02 / Q01；**本文件是选型证据与建议，不是已接受的架构决策或实现验收**。只修改本报告，没有修改产品源码、Cargo.toml、Cargo.lock、工具链或共享项目状态文档。
 
+后续决策（2026-09-18）：用户已接受自行实现集中 MCP 协议适配层，见 [D09](DECISIONS.md)。以下保留研究提交时的证据和建议；支持版本集合、产品集成及互操作仍待落实，研究实验不升级为产品验收结果。
+
 开发目录：`/Users/laysath/Projects/rustdesk`，`codex/mcp-upstream`。参考实现现位于 `/Users/laysath/.codex/worktrees/rustdesk-mcp-reference/rustdesk`，`codex/mcp-controller`。研究期间工作区发生迁移，以下实验始终保存在仓库外。
 
 ## 结论
