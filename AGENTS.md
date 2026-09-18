@@ -164,3 +164,9 @@ Then translate that source into the file's target language (infer the language f
 * New English-text keys use sentence case, not Title Case: `Use ID whitelisting`, **not** `Use ID Whitelisting`. Acronyms (ID, IP, 2FA…) stay uppercase. Legacy Title-Case keys (e.g. `Use IP Whitelisting`) stay as-is — do not rename them.
 * Since the key itself is the English display text, a sentence-case key usually needs **no** `en.rs` entry; add one only when the display text must differ from the key (e.g. `*_tip` keys).
 * Append each new key to `template.rs` (with `""`) and to every `src/lang/*.rs` file (translated, or `""` if unsure; always `""` for `it.rs`), at the end of the list.
+
+<!-- BEGIN temporary MCP project tracking -->
+## Temporary MCP project tracking
+
+For this MCP contribution, read `docs/mcp-upstream-work/README.md` before starting work. Keep task status, capability coverage, decisions, validation evidence, and the work log current as each work unit finishes. These files are tracked on the development branch; remove the directory and this temporary section during final PR preparation, following `docs/mcp-upstream-work/CLOSEOUT.md`.
+<!-- END temporary MCP project tracking -->
