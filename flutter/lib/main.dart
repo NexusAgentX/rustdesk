@@ -448,13 +448,28 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       }
     };
     WidgetsBinding.instance.addObserver(this);
+    if (isAndroid || isIOS) {
+      bind.mainMcpSetForeground(
+          foreground: WidgetsBinding.instance.lifecycleState ==
+              AppLifecycleState.resumed);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _updateOrientation());
   }
 
   @override
   void dispose() {
+    if (isAndroid || isIOS) {
+      bind.mainMcpSetForeground(foreground: false);
+    }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (isAndroid || isIOS) {
+      bind.mainMcpSetForeground(foreground: state == AppLifecycleState.resumed);
+    }
   }
 
   @override

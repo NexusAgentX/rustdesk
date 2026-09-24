@@ -174,6 +174,16 @@ elseif(VCPKG_TARGET_IS_OSX)
 --enable-encoder=h264_videotoolbox,hevc_videotoolbox \
 --enable-hwaccel=h264_videotoolbox,hevc_videotoolbox \
 ")
+elseif(VCPKG_TARGET_IS_IOS AND VCPKG_OSX_SYSROOT STREQUAL "iphonesimulator")
+    string(APPEND OPTIONS "\
+--arch=arm64 \
+--disable-autodetect \
+--disable-hwaccels \
+--disable-encoders \
+--disable-videotoolbox \
+--extra-cflags=\"-arch arm64 -mios-simulator-version-min=13.0\" \
+--extra-ldflags=\"-arch arm64 -mios-simulator-version-min=13.0\" \
+")
 elseif(VCPKG_TARGET_IS_IOS)
     string(APPEND OPTIONS "\
 --arch=arm64 \

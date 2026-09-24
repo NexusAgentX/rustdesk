@@ -1,0 +1,19 @@
+export PATH=/Users/laysath/Library/Caches/rustdesk-build/mobile-20260918/rust-tools/bin:/Users/laysath/.cargo/bin:/Users/laysath/Library/Caches/rustdesk-build/nasm-install/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export RUSTUP_TOOLCHAIN=1.75.0
+export ANDROID_HOME=/Users/laysath/Library/Android/sdk
+export ANDROID_SDK_ROOT=$ANDROID_HOME
+export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
+export ANDROID_NDK_ROOT=$ANDROID_NDK_HOME
+export JAVA_HOME=/Users/laysath/Library/Caches/rustdesk-build/mobile-20260918/jdk-17.0.20.1+1/Contents/Home
+export VCPKG_ROOT=/Users/laysath/Library/Caches/rustdesk-build/mobile-20260918/vcpkg
+export VCPKG_DEFAULT_TRIPLET=arm64-android
+export VCPKG_TARGET_TRIPLET=arm64-android
+export VCPKG_DEFAULT_HOST_TRIPLET=arm64-osx
+export LIBCLANG_PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/lib
+export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/sysroot -resource-dir=$($ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang -print-resource-dir)"
+export CARGO_BUILD_JOBS=2
+export SODIUM_USE_PKG_CONFIG=1
+export PKG_CONFIG_ALLOW_CROSS=1
+export PKG_CONFIG_ALL_STATIC=1
+export PKG_CONFIG_LIBDIR_aarch64_linux_android=/Users/laysath/Library/Caches/rustdesk-build/mobile-20260918/libsodium-android/lib/pkgconfig
+export PKG_CONFIG_LIBDIR_aarch64_apple_darwin=/Users/laysath/Library/Caches/rustdesk-build/macos-baseline-5278fcab-20260918/source/target/release/build/libsodium-sys-c4ce05bbedd9e62a/out/installed/lib/pkgconfig

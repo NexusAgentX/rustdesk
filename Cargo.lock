@@ -3881,6 +3881,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "humantime"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3912,6 +3918,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa 1.0.11",
  "pin-project-lite",
  "pin-utils",
@@ -7095,6 +7102,7 @@ dependencies = [
  "async-process",
  "async-trait",
  "base",
+ "base64 0.22.1",
  "bytemuck",
  "bytes",
  "cc",
@@ -7127,6 +7135,9 @@ dependencies = [
  "hbb_common",
  "hex",
  "hound",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "image 0.24.9",
  "impersonate_system",
  "include_dir",
@@ -7172,6 +7183,7 @@ dependencies = [
  "shutdown_hooks",
  "softbuffer",
  "stunclient",
+ "subtle",
  "sys-locale",
  "system_shutdown",
  "tao",
@@ -7180,7 +7192,9 @@ dependencies = [
  "termios 0.3.3",
  "tiny-skia",
  "tokio",
+ "tokio-util",
  "totp-rs",
+ "tracing",
  "tray-icon",
  "ttf-parser",
  "url",

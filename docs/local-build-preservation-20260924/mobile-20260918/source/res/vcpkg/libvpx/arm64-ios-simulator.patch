@@ -1,0 +1,61 @@
+--- a/build/make/configure.sh
++++ b/build/make/configure.sh
+@@ -916,18 +916,18 @@
+   # Shared library framework builds are only possible on iOS 8 and later.
+   if enabled shared; then
+     IOS_VERSION_OPTIONS="--enable-shared"
+-    IOS_VERSION_MIN="8.0"
++    IOS_VERSION_MIN="13.0"
+   else
+     IOS_VERSION_OPTIONS=""
+-    IOS_VERSION_MIN="7.0"
++    IOS_VERSION_MIN="13.0"
+   fi
+ 
+   # Handle darwin variants. Newer SDKs allow targeting older
+   # platforms, so use the newest one available.
+   case ${toolchain} in
+     arm*-darwin-*)
+-      add_cflags "-miphoneos-version-min=${IOS_VERSION_MIN}"
+-      iphoneos_sdk_dir="$(show_darwin_sdk_path iphoneos)"
++      add_cflags "-mios-simulator-version-min=${IOS_VERSION_MIN}"
++      iphoneos_sdk_dir="$(show_darwin_sdk_path iphonesimulator)"
+       if [ -d "${iphoneos_sdk_dir}" ]; then
+         add_cflags  "-isysroot ${iphoneos_sdk_dir}"
+         add_ldflags "-isysroot ${iphoneos_sdk_dir}"
+@@ -996,8 +996,8 @@
+       add_ldflags "-arch ${toolchain%%-*}"
+       ;;
+     *-iphonesimulator-*)
+-      add_cflags  "-miphoneos-version-min=${IOS_VERSION_MIN}"
+-      add_ldflags "-miphoneos-version-min=${IOS_VERSION_MIN}"
++      add_cflags  "-mios-simulator-version-min=${IOS_VERSION_MIN}"
++      add_ldflags "-mios-simulator-version-min=${IOS_VERSION_MIN}"
+       iossim_sdk_dir="$(show_darwin_sdk_path iphonesimulator)"
+       if [ -d "${iossim_sdk_dir}" ]; then
+         add_cflags  "-isysroot ${iossim_sdk_dir}"
+@@ -1183,7 +1183,7 @@
+ 
+         darwin)
+           if ! enabled external_build; then
+-            XCRUN_FIND="xcrun --sdk iphoneos --find"
++            XCRUN_FIND="xcrun --sdk iphonesimulator --find"
+             CXX="$(${XCRUN_FIND} clang++)"
+             CC="$(${XCRUN_FIND} clang)"
+             AR="$(${XCRUN_FIND} ar)"
+@@ -1200,13 +1200,13 @@
+             add_cflags -arch ${tgt_isa}
+             add_ldflags -arch ${tgt_isa}
+ 
+-            alt_libc="$(show_darwin_sdk_path iphoneos)"
++            alt_libc="$(show_darwin_sdk_path iphonesimulator)"
+             if [ -d "${alt_libc}" ]; then
+               add_cflags -isysroot ${alt_libc}
+             fi
+ 
+             if [ "${LD}" = "${CXX}" ]; then
+-              add_ldflags -miphoneos-version-min="${IOS_VERSION_MIN}"
++              add_ldflags -mios-simulator-version-min="${IOS_VERSION_MIN}"
+             else
+               add_ldflags -ios_version_min "${IOS_VERSION_MIN}"
+             fi

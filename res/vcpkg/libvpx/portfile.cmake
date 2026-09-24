@@ -1,5 +1,9 @@
 vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 
+if(VCPKG_TARGET_IS_IOS AND VCPKG_TARGET_ARCHITECTURE STREQUAL "arm64" AND VCPKG_OSX_SYSROOT STREQUAL "iphonesimulator")
+    set(IOS_SIMULATOR_PATCH arm64-ios-simulator.patch)
+endif()
+
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO webmproject/libvpx
@@ -7,6 +11,7 @@ vcpkg_from_github(
     SHA512 824fe8719e4115ec359ae0642f5e1cea051d458f09eb8c24d60858cf082f66e411215e23228173ab154044bafbdfbb2d93b589bb726f55b233939b91f928aae0
     HEAD_REF master
     PATCHES
+        ${IOS_SIMULATOR_PATCH}
         0003-add-uwp-v142-and-v143-support.patch
         0004-remove-library-suffixes.patch
 )

@@ -2317,15 +2317,17 @@ pub mod sessions {
 
 pub(super) mod async_tasks {
     use hbb_common::{bail, tokio, ResultType};
+    #[cfg(not(all(feature = "mcp", any(target_os = "android", target_os = "ios"))))]
+    use std::sync::mpsc::{sync_channel, SyncSender};
     use std::{
         collections::HashMap,
-        sync::{
-            mpsc::{sync_channel, SyncSender},
-            Arc, Mutex,
-        },
+        sync::{Arc, Mutex},
     };
 
+    #[cfg(not(all(feature = "mcp", any(target_os = "android", target_os = "ios"))))]
     type TxQueryOnlines = SyncSender<Vec<String>>;
+    #[cfg(all(feature = "mcp", any(target_os = "android", target_os = "ios")))]
+    type TxQueryOnlines = tokio::sync::mpsc::Sender<Vec<String>>;
     lazy_static::lazy_static! {
         static ref TX_QUERY_ONLINES: Arc<Mutex<Option<TxQueryOnlines>>> = Default::default();
     }
@@ -2343,11 +2345,20 @@ pub(super) mod async_tasks {
     #[tokio::main(flavor = "current_thread")]
     async fn start_flutter_async_runner_() {
         // Only one task is allowed to run at the same time.
+        #[cfg(not(all(feature = "mcp", any(target_os = "android", target_os = "ios"))))]
         let (tx_onlines, rx_onlines) = sync_channel::<Vec<String>>(1);
+        #[cfg(all(feature = "mcp", any(target_os = "android", target_os = "ios")))]
+        let (tx_onlines, mut rx_onlines) = tokio::sync::mpsc::channel::<Vec<String>>(1);
         TX_QUERY_ONLINES.lock().unwrap().replace(tx_onlines);
+        #[cfg(all(feature = "mcp", any(target_os = "android", target_os = "ios")))]
+        let _mcp_runtime = crate::mcp::runtime::register_current();
 
         loop {
-            match rx_onlines.recv() {
+            #[cfg(not(all(feature = "mcp", any(target_os = "android", target_os = "ios"))))]
+            let query = rx_onlines.recv();
+            #[cfg(all(feature = "mcp", any(target_os = "android", target_os = "ios")))]
+            let query = rx_onlines.recv().await.ok_or(());
+            match query {
                 Ok(ids) => {
                     crate::client::peer_online::query_online_states(ids, handle_query_onlines).await
                 }

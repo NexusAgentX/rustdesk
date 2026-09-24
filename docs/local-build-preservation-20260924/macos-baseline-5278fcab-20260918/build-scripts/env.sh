@@ -1,0 +1,11 @@
+export BASELINE_ROOT=/Users/laysath/Library/Caches/rustdesk-build/macos-baseline-5278fcab-20260918
+export PATH=/Users/laysath/Library/Caches/rustdesk-build/flutter-3.24.5/bin:/Users/laysath/Library/Caches/rustdesk-build/rust-tools/bin:/Users/laysath/Library/Caches/rustdesk-build/nasm-install/bin:/Users/laysath/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+export RUSTUP_TOOLCHAIN=1.81.0
+export VCPKG_ROOT=$BASELINE_ROOT/vcpkg
+export VCPKG_DEFAULT_TRIPLET=arm64-osx
+export VCPKG_DEFAULT_HOST_TRIPLET=arm64-osx
+export MACOSX_DEPLOYMENT_TARGET=12.3
+export LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib
+export COCOAPODS_DISABLE_STATS=true
+export RUST_LOG=info
+export FLUTTER_XCODE_MACOSX_DEPLOYMENT_TARGET=12.3

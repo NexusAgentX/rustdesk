@@ -1792,6 +1792,12 @@ pub fn main_init(app_dir: String, custom_client_config: String) {
     initialize(&app_dir, &custom_client_config);
 }
 
+pub fn main_mcp_set_foreground(_foreground: bool) -> SyncReturn<()> {
+    #[cfg(all(feature = "mcp", any(target_os = "android", target_os = "ios")))]
+    crate::mcp::runtime::set_app_foreground(_foreground);
+    SyncReturn(())
+}
+
 pub fn main_device_id(id: String) {
     *crate::common::DEVICE_ID.lock().unwrap() = id;
 }
