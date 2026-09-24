@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/mcpkit-rs",
+    "crates/mcpkit-rs-cli",
+    "crates/mcpkit-rs-config",
+    "crates/mcpkit-rs-macros",
+    "crates/mcpkit-rs-policy",
+    "examples/clients",
+    "examples/servers",
+    "examples/simple-chat-client",
+    "examples/transport",
+    "examples/wasm/wasmtime/calculator",
+]
+exclude = [
+    "crates/mcpkit-rs-tests",
+    "examples/rig-integration",
+    "examples/wasm/wasmedge/fullstack",
+]
+default-members = ["crates/mcpkit-rs", "crates/mcpkit-rs-macros"]
+resolver = "2"
+
+[workspace.dependencies]
+mcpkit-rs = { version = "1.1.0", path = "./crates/mcpkit-rs" }
+mcpkit-rs-cli = { version = "1.1.0", path = "./crates/mcpkit-rs-cli" }
+mcpkit-rs-config = { version = "1.1.0", path = "./crates/mcpkit-rs-config" }
+mcpkit-rs-macros = { version = "1.1.0", path = "./crates/mcpkit-rs-macros" }
+mcpkit-rs-policy = { version = "1.1.0", path = "./crates/mcpkit-rs-policy" }
+
+[workspace.package]
+edition = "2024"
+authors = ["4t145 <u4t145@163.com>", "ra0x3 <ractz@pm.me>"]
+version = "1.1.0"
+license = "Apache-2.0"
+repository = "https://github.com/ra0x3/mcpkit-rs"
+license-file = "LICENSE"
+description = "Rust SDK for Model Context Protocol"
+keywords = ["mcp", "sdk", "tokio", "modelcontextprotocol"]
+homepage = "https://github.com/ra0x3/mcpkit-rs"
+categories = ["network-programming", "asynchronous"]
+readme = "README.md"
